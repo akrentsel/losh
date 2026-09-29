@@ -1,8 +1,9 @@
 # Remote process and filesystem server
 
-Status: detailed design proposal, revised 2026-09-29. Documentation only;
-implementation will begin after a separate go-ahead. Interfaces, protocol
-fields, paths, and commands below are proposed, not available features.
+Status: accepted design with an initial implementation, revised 2026-09-29.
+Sections describe the target contract. Explicit “implemented baseline” notes
+identify what exists today; remaining durability and interface details are
+still proposed.
 
 ## 1. Preferred direction
 
@@ -73,13 +74,12 @@ Codex / later Claude Code
 | Filesystem executor | Reads/search, version checks, patch interpretation, staging, publication, metadata semantics |
 | Process supervisor | Job launch, status, output replay, input, cancellation, lifecycle independent of SSH |
 
-The gateway uses SSH stdio. A per-user supervisor, reachable only through a
-private local socket or equivalent IPC on the target, owns work independently
-of that connection. Initial implementation can choose a different local
-supervision mechanism if it provides the same lifetime and recovery contract.
+The gateway uses SSH stdio. The implemented baseline records each accepted
+operation and launches a detached per-operation worker, which owns work
+independently of the SSH connection. A later persistent per-user supervisor can
+add stronger scheduling, cancellation, recovery, and upgrade coordination.
 There is no extra public listening port, root daemon, or model credential on
-the target. Merely spawning a server as an SSH child is not sufficient to
-guarantee that accepted operations survive a disconnect.
+the target.
 
 ## 3. Startup, installation, and session identity
 
@@ -588,28 +588,33 @@ requires an explicit future design rather than hidden escalation.
 
 ## 13. Implementation milestones and acceptance criteria
 
-These are a proposed future sequence, not authorization to begin implementation.
+The first implementation now provides:
 
-### A. Native integration feasibility
+- automatic platform detection and atomic versioned server upload;
+- durable request IDs/digests, remote request/status journals, and deduplication;
+- detached command workers with retained terminal output and exit status;
+- a server-side Codex patch parser for add/update/delete/move;
+- confined paths, staged complete files, atomic per-file rename, and rollback
+  attempts when a reported publication step fails;
+- reconnecting RPC calls and status recovery; and
+- unit plus real-SSH integration coverage.
 
-Demonstrate one remote read, native edit with the expected diff, and dependent
-remote command through Codex. Test hook errors/timeouts, denied approval,
-subagents, implicit reads, and execution continuation. Verify that native local
-execution cannot also occur. Identify any required harness changes precisely.
-Document the result before selecting the final adapter mechanism.
+The first Codex integration feasibility result is also known: shell replacement
+works cleanly. Current hooks cannot replace native `apply_patch` with a custom
+executor result, so the pre-hook commits remotely and blocks the local duplicate.
+Codex follows the success reason, but its UI labels the call blocked. Preserving
+the native diff/result requires a stronger harness extension or a carefully
+mediated local presentation layer.
 
-### B. Server protocol and safe single-file edits
+Still required for the full contract:
 
-Implement bootstrap/negotiation, request identity, journal, status/results,
-read/stat/list/search, one negotiated edit format, whole-file staging, conflict
-checks, and supported filesystem metadata. Establish stable read/version
-semantics and a conservative writer gate.
-
-### C. Recovery and process lifecycle
-
-Add detached job supervision, output replay, cancellation, dependency ordering,
-client restart recovery, multi-file recovery, retention, and upgrade behavior.
-Durability should be designed in B, not retrofitted after unjournaled writes.
+- server read/stat/list/search with stable version tokens;
+- optimistic expected-version checks independent of patch context;
+- persistent supervision, output-by-offset streaming, PTYs, input, cancellation,
+  dependency scheduling, and target epochs;
+- crash recovery for partial multi-file publication and retained-result GC;
+- approval/audit integration and broad failure injection; and
+- Claude Code conformance.
 
 ### D. Failure testing before reliability claims
 
@@ -650,20 +655,19 @@ approval, and diff behavior with the same conformance cases.
 | Initial transfer strategy | Whole-file staging/replacement support plus remote patch interpretation |
 | Native harness experience | Preserve where demonstrably supported; first feasibility gate |
 | Mirror/mount | Alternatives, not the default architecture |
-| Implementation status | Awaiting separate go-ahead |
+| Implementation status | Initial bootstrap, journaling, detached exec, and patch slice implemented |
 
 Open implementation choices:
 
-1. Which exact Codex integration can replace native execution and return native
-   results, and what maintenance cost is acceptable if a harness change is needed?
-2. Which patch formats and filesystem mutation types belong in the first release?
-3. Which target OS/filesystems and supervisor mechanism are supported initially?
+1. Which stronger Codex integration can return a native successful patch result
+   without a local authoritative mirror?
+2. Which stable read/version API should the Codex adapter expose next?
+3. Which target filesystems can advertise power-loss durability?
 4. How should additional scopes, external writers, and background jobs be exposed?
 5. Is recoverable multi-file publication sufficient, or do specific workflows
    require atomic activation before release?
-6. What retention, disk quotas, and reconciliation UX are appropriate?
-7. How should plain-SSH compatibility mode be selected without confusing its
-   guarantees with reliable server mode?
+6. What retention, disk quotas, target epochs, and reconciliation UX are appropriate?
+7. When should a persistent supervisor replace detached per-operation workers?
 
 The preferred architecture is settled at the proposal level: remote filesystem
 and process services over SSH. These questions determine its concrete protocol,

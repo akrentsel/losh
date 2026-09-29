@@ -14,8 +14,9 @@ agent's actions on a selected remote host.
       changing anything.
 
 The model session, provider authentication, policy, and session index remain on
-your computer. The remote machine needs only its existing SSH server and a
-POSIX shell.
+your computer. On first connection, losh uploads a small versioned server
+through SSH into the remote user's home directory. It needs no sudo, model
+credential, public port, or system service.
 
 > [!WARNING]
 > losh is currently a proof of concept. It builds and its unit tests pass, but
@@ -69,30 +70,36 @@ The compatibility goal is:
 Implemented:
 
 - system OpenSSH targets and aliases from **~/.ssh/config**;
+- automatic OS/architecture detection and atomic per-user server installation;
+- bundled Linux/macOS AMD64/ARM64 server binaries;
+- durable operation IDs, remote journals, detached command workers, and result replay;
 - remote roots such as **prod:/srv/api**;
-- SSH connectivity and POSIX-shell probing;
-- connection reuse with ControlMaster and ControlPersist;
-- Codex PreToolUse interception for shell commands;
-- propagation of remote stdout, stderr, and exit status;
-- blocking local apply_patch in a remote session;
-- deterministic per-target state under **~/.losh**;
-- resume through Codex's supported **resume --last**;
-- session listing.
+- Codex shell interception with remote stdout, stderr, and exit status;
+- server-side add/update/delete/move patches with path confinement, staging,
+  atomic per-file publication, and rollback on reported commit errors;
+- deterministic local session state, **--resume**, and session listing.
 
-Not implemented yet:
+Current limitations:
 
-- structured remote read, write, and patch tools;
-- interactive PTYs and reattachable background processes;
-- the optional automatically uploaded helper;
-- losh-owned approvals and audit logs;
-- strong local process sandboxing;
-- `--harness claude` and other coding-agent adapters;
-- release binaries and a Homebrew tap.
+- Codex's hook API cannot replace native `apply_patch` execution with a custom
+  executor result. losh applies the patch remotely, blocks its local duplicate,
+  and returns the confirmed result in the hook message; Codex continues
+  correctly, but the UI labels the native call as blocked.
+- command output is returned when the command exits rather than streamed;
+- interactive PTYs, stdin attachment, cancellation, and reconnectable terminals
+  are not implemented;
+- patch conflict checks currently use patch context, not read-version tokens;
+- multi-file patches use staged per-file publication and best-effort rollback,
+  not crash-recovered whole-tree transactions;
+- losh-owned approvals, signed release artifacts, `--harness claude`, and
+  production hardening remain to be implemented.
 
 ## Clean installation
 
-Install losh on the **client** where Codex runs. Do not install it on the SSH
-target. The target needs only a working SSH server and `/bin/sh`.
+Install losh on the **client** where Codex runs. Do not install it manually on
+the target. The target needs SSH, `/bin/sh`, a supported OS/architecture, and a
+writable home directory. The first `losh` connection installs the matching
+server automatically through SSH.
 
 The recommended installation is:
 
@@ -126,9 +133,10 @@ If Homebrew is unavailable, clone and install from source:
 
     ./scripts/install.sh
 
-The installer builds losh and copies it to `$HOME/.local/bin/losh`. It does not
-use sudo, edit shell startup files, change SSH configuration, or install
-anything on the target.
+The installer builds the client plus cross-platform server bundles, then copies
+them under `$HOME/.local`. It does not use sudo, edit shell startup files, or
+change SSH configuration. A target is changed only when you later connect with
+`losh`, which installs the matching bundle in the remote user's home.
 
 If `$HOME/.local/bin` is not on PATH, the installer prints the export command.
 Run it for the current shell, and add the same line to the appropriate shell
@@ -159,8 +167,9 @@ conversation:
     losh user@example.com:/srv/app --resume
 
 Session metadata and generated Codex workspaces live under `$HOME/.losh`. List
-them with `losh sessions`. The target receives commands over ordinary SSH; it
-does not receive model credentials or persistent losh state.
+them with `losh sessions`. The target stores the versioned helper and durable
+operation records under its user account; it never receives model credentials
+or the Codex conversation.
 
 The source is published at **https://github.com/akrentsel/losh** and its formula
 at **https://github.com/akrentsel/homebrew-tap**. After explicitly running
@@ -172,11 +181,11 @@ loshy2-to-loshy setup, troubleshooting, and uninstall instructions, see
 
 ## Design
 
-For the proposed remote filesystem/process server, native-tool integration,
-and disconnect recovery guarantees, see the
-[remote interfaces design proposal](docs/remote-interfaces.md). It selects
-structured remote operations as the preferred direction; the sections below
-describe the current prototype and earlier design context.
+For the remote filesystem/process server, native-tool integration, and
+disconnect recovery contract, see the
+[remote interfaces design](docs/remote-interfaces.md). The current implementation
+is the first usable slice of that design; later durability stages are marked
+explicitly in the document.
 
 ### Keep the agent local
 
@@ -214,28 +223,27 @@ Redirecting arbitrary processes or filesystem syscalls would turn losh into a
 distributed operating system. Instead, it intercepts actions at the agent's
 tool boundary, where their intent is explicit.
 
-    Codex proposes Bash("systemctl status api")
+    Codex proposes Bash or apply_patch
                   │
                   ▼
-    generated PreToolUse hook
-                  │ saves original command privately
-                  │ rewrites tool input
+    generated tool hook + losh client coordinator
+                  │ durable operation ID
                   ▼
-    losh __exec-file <session> <call>
-                  │
+    OpenSSH → losh-server → detached worker / filesystem transaction
+                  │ remote journal + retained result
                   ▼
-    system OpenSSH client → remote sh
-                  │
-                  ▼
-    stdout + stderr + exit code return to Codex
+    confirmed stdout, exit status, or patch result returns to Codex
 
-The command is stored briefly in a mode-0600 file instead of being embedded in
-another shell command. This avoids an extra quoting boundary. The file is
-deleted after consumption.
+Shell commands are stored briefly in a mode-0600 local call file so the rewritten
+wrapper does not add a quoting boundary. losh-server records the accepted
+operation before executing it, and a reconnect queries the same ID instead of
+blindly rerunning it.
 
-Codex's built-in apply_patch is denied because rewriting its arguments would
-still produce a local edit. Until a structured remote patch tool exists, Codex
-is instructed to edit through remotely executed shell commands.
+For `apply_patch`, the pre-hook sends the native patch to losh-server, waits for
+its committed result, and denies the original local duplicate. This is safe for
+the target and functional for Codex, although current Codex UI presents the
+native tool call as blocked. The generated instructions otherwise describe an
+ordinary workspace rather than teaching the model a separate remote workflow.
 
 ### Let OpenSSH remain OpenSSH
 
@@ -270,34 +278,28 @@ Codex remains authoritative for conversation state. With --resume, losh runs
 **codex resume --last** from the stable target workspace instead of parsing
 Codex's private transcript format.
 
-### Make the remote helper optional
+### Bootstrap losh-server automatically
 
-Plain SSH is the compatibility contract. A future helper can add structured
-files, atomic patches, PTYs, and process attachment, but must not be required.
+On every connection, losh checks the target OS, architecture, and installed
+server version. If needed, it uploads the matching bundled binary and installs
+it atomically at:
 
-Proposed startup:
+    ~/.local/lib/losh/server/<version>/losh-server
 
-1. Connect with ordinary SSH.
-2. Detect OS, architecture, cache directory, and an existing helper version.
-3. Reuse **~/.cache/losh/losh-server** when compatible.
-4. Otherwise upload a checksummed binary over SSH and install it atomically.
-5. Run **losh-server --stdio** as the SSH user.
-6. Negotiate supported capabilities.
-7. Fall back to pure SSH if any step fails.
+The helper runs through SSH and detached per-operation workers. It does not
+listen on a public port, require sudo, or receive model credentials. Durable
+operation records live under `~/.local/state/losh`. Use `--no-install` to fail
+rather than installing or upgrading the helper. losh does not silently fall
+back to weaker direct execution when reliable server mode is expected.
 
-Unlike mosh-server, this helper need not listen on another TCP or UDP port.
-The protocol travels over SSH standard input/output. It needs neither sudo nor
-a system service and never receives model credentials.
+### Conversation and operation persistence
 
-### Conversation persistence is not process persistence
-
-Local conversation state can survive a disconnect immediately. An ordinary
-remote process may still receive SIGHUP when its connection disappears.
-
-Future durable-process backends could include existing tmux or screen, nohup
-with PID/log tracking, user-level systemd-run, or PTYs managed by the optional
-helper. --resume restores a conversation; a future attach operation reconnects
-to a remote process.
+Codex conversation state remains local and `--resume` restores it. Accepted
+commands run in detached server workers with remote status, output, and exit
+records, so losing the SSH transport does not cause losh to submit a second
+command. Streaming attachment and interactive PTYs remain future work. A target
+reboot can still interrupt a worker; losh reports evidence or uncertainty
+instead of relaunching it automatically.
 
 ## Security model
 
@@ -324,34 +326,38 @@ enforcement boundary.
 
 ## Open design questions
 
-1. Should pure-SSH mode remain first-class forever, or only bootstrap a helper?
+1. Which Codex integration can return a native successful patch result while
+   keeping the target filesystem authoritative?
 2. Should the default approval policy ask for every command, or permit a narrow
    read-only set?
-3. Should fallback file operations use SFTP, portable shell commands, or both?
-4. Should sessions use the literal alias or resolved host-key fingerprint and
-   username?
+3. Which read-version and target-identity tokens should bind later edits?
+4. How should target epochs distinguish a rebuilt host from a reconnect?
 5. How should sudo work without exposing passwords to the model?
 6. Should each target/root have one conversation or named conversations?
-7. Should the helper be another mode of this binary or a smaller binary?
+7. When should detached workers become a persistent per-user supervisor?
 
 ## Near-term roadmap
 
-1. Add losh-owned approval handling.
-2. Add structured read, write, stat, list, and hash-checked patch operations.
-3. Add integration tests with an ephemeral SSH server and fake hook caller.
-4. Add streaming PTYs, cancellation, and background-process tracking.
-5. Implement the optional stdio helper with capability negotiation.
-6. Add signed release artifacts and a Homebrew tap.
-7. Add the `--harness` abstraction and a Claude Code adapter.
+1. Add read-version tokens and server-side stat/read/list/search operations.
+2. Add crash recovery for interrupted multi-file commits.
+3. Add streaming output, PTYs, stdin, cancellation, and job attachment.
+4. Add losh-owned approvals, audit records, and target identity epochs.
+5. Add signed release artifacts and broader failure-injection testing.
+6. Add the `--harness` abstraction and a Claude Code adapter.
 
 ## Development
 
-    make test    # go test ./...
-    make build   # bin/losh
-    make install # go install ./cmd/losh
+    make test    # unit tests and vet
+    make build   # client plus cross-platform server bundles
+    make install # install client and bundles under PREFIX
 
-Current tests cover target/root parsing, argument forwarding, working-directory
-construction, and shell quoting. Integration tests are still needed.
+Tests cover argument handling, patch parsing and conflicts, path escapes,
+journaling, and durable results. The opt-in SSH integration test exercises
+bootstrap, commands, patches, and operation deduplication:
+
+    LOSH_SERVER_BINARY=$PWD/bin/losh \
+      LOSH_INTEGRATION_TARGET=user@host \
+      go test ./cmd/losh -run TestRemoteServerIntegration -v
 
 ## Next step: unreliable networks
 
@@ -360,16 +366,12 @@ conversation already survives because its state is kept on the client, but an
 in-flight remote action needs stronger semantics than simply retrying it: after
 a disconnect, losh may not know whether the command ran.
 
-The next transport milestone should be:
-
-1. reconnect automatically for new actions and retry only when losh knows an
-   action was not started;
-2. give actions durable IDs and record their status, output, and exit code via
-   the optional helper, making uncertain completion recoverable;
-3. run long-lived work as durable remote jobs and support attach, poll, cancel,
-   and output replay after reconnection;
-4. test suspend/resume, packet loss, IP changes, and laptop sleep against an
-   ephemeral SSH target.
+The implemented baseline reconnects RPC calls, deduplicates requests with
+durable operation IDs, runs accepted commands in detached workers, and replays
+terminal output/status. The next transport milestone is streaming output by
+offset, interactive attachment/cancellation, explicit target epochs, and
+failure injection around every journal transition, reboot, and result-retention
+boundary.
 
 Mosh is worth evaluating later as an optional interactive terminal backend,
 especially for a human taking over a PTY. It is not a transparent byte stream

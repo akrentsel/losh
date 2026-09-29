@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "0.1.1"
+const version = "0.2.0"
 
 type session struct {
 	ID         string    `json:"id"`
@@ -37,6 +37,7 @@ type options struct {
 	root      string
 	resume    bool
 	skipProbe bool
+	noInstall bool
 }
 
 func main() {
@@ -53,6 +54,8 @@ func main() {
 func run(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "__server", "__server-worker":
+			return runServer(args, os.Stdin, os.Stdout)
 		case "__hook":
 			if len(args) != 2 {
 				return errors.New("invalid hook invocation")
@@ -79,7 +82,7 @@ func run(args []string) error {
 		usage(os.Stderr)
 		return err
 	}
-	return start(opts.target, opts.root, opts.resume, opts.skipProbe, codexArgs)
+	return start(opts.target, opts.root, opts.resume, opts.skipProbe, opts.noInstall, codexArgs)
 }
 
 func parseArgs(args []string) (options, []string, error) {
@@ -94,6 +97,8 @@ func parseArgs(args []string) (options, []string, error) {
 			out.resume = true
 		case "--skip-probe":
 			out.skipProbe = true
+		case "--no-install":
+			out.noInstall = true
 		case "--root":
 			if i+1 >= len(args) {
 				return out, nil, errors.New("--root requires a path")
@@ -126,7 +131,7 @@ func splitTarget(value, explicitRoot string) (string, string) {
 	return value, ""
 }
 
-func start(target, remoteRoot string, resume, skipProbe bool, codexArgs []string) error {
+func start(target, remoteRoot string, resume, skipProbe, noInstall bool, codexArgs []string) error {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		return errors.New("OpenSSH client not found in PATH")
 	}
@@ -146,6 +151,9 @@ func start(target, remoteRoot string, resume, skipProbe bool, codexArgs []string
 		if err := probe(s); err != nil {
 			return fmt.Errorf("SSH probe failed: %w", err)
 		}
+	}
+	if err := ensureRemoteServer(s, !noInstall); err != nil {
+		return err
 	}
 
 	args := codexBaseArgs()
@@ -245,11 +253,28 @@ func runHook(sessionID string, in io.Reader, out io.Writer) error {
 			},
 		})
 	case "apply_patch":
+		patchText, ok := input.ToolInput["command"].(string)
+		if !ok || patchText == "" {
+			return errors.New("apply_patch hook did not contain a patch")
+		}
+		callID := safeName(input.ToolUseID)
+		if callID == "" {
+			callID = shortHash(patchText + time.Now().UTC().String())
+		}
+		s, err := loadSession(sessionID)
+		if err != nil {
+			return err
+		}
+		result, patchErr := runRemotePatch(s, callID, patchText)
+		reason := "losh-server applied this patch to the workspace successfully. Treat the patch as completed. " + result
+		if patchErr != nil {
+			reason = "losh-server did not apply this patch: " + patchErr.Error()
+		}
 		return json.NewEncoder(out).Encode(map[string]any{
 			"hookSpecificOutput": map[string]any{
 				"hookEventName":            "PreToolUse",
 				"permissionDecision":       "deny",
-				"permissionDecisionReason": "This is a losh remote session. apply_patch would edit the local session workspace. Make the edit with a remote shell command instead.",
+				"permissionDecisionReason": reason,
 			},
 		})
 	default:
@@ -267,20 +292,10 @@ func runCommandFile(sessionID, callID string) error {
 	if err != nil {
 		return fmt.Errorf("read pending command: %w", err)
 	}
-	defer os.Remove(callPath)
-
-	script := remotePrelude(s.RemoteRoot) + string(data)
-	remoteCommand := "sh -c " + shellQuote(script)
-	args := append(sshBaseArgs(s), s.Target, remoteCommand)
-	cmd := exec.Command("ssh", args...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	err = cmd.Run()
+	err = runRemoteCommand(s, callID, string(data), os.Stdout, os.Stderr)
 	if err == nil {
+		_ = os.Remove(callPath)
 		return nil
-	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return exitCodeError{code: exitErr.ExitCode()}
 	}
 	return err
 }
@@ -355,6 +370,12 @@ func materializeWorkspace(s session) error {
 	if err := os.MkdirAll(filepath.Join(s.Workspace, ".codex"), 0700); err != nil {
 		return err
 	}
+	if err := os.Chmod(s.Workspace, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(filepath.Join(s.Workspace, ".codex"), 0700); err != nil {
+		return err
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -364,7 +385,7 @@ func materializeWorkspace(s session) error {
 		"hooks": map[string]any{
 			"PreToolUse": []any{map[string]any{
 				"matcher": "^(Bash|apply_patch)$",
-				"hooks":   []any{map[string]any{"type": "command", "command": shellQuote(exe) + " __hook " + shellQuote(s.ID), "timeout": 30, "statusMessage": "Routing tool call through losh"}}}},
+				"hooks":   []any{map[string]any{"type": "command", "command": shellQuote(exe) + " __hook " + shellQuote(s.ID), "timeout": 600, "statusMessage": "Routing workspace operation through losh"}}}},
 		},
 	}
 	hookData, err := json.MarshalIndent(hooks, "", "  ")
@@ -379,20 +400,25 @@ func materializeWorkspace(s session) error {
 	if s.RemoteRoot != "" {
 		rootDescription = s.RemoteRoot
 	}
-	instructions := fmt.Sprintf(`# losh remote workspace
+	instructions := fmt.Sprintf(`# losh workspace
 
-This Codex session operates on the remote SSH target %q, rooted at %q.
-
-- Treat the remote target as the computer you are working on.
-- Shell commands are transparently executed on the remote target by a trusted PreToolUse hook.
-- Every shell command begins in the remote root. Use absolute paths or include an explicit cd when needed.
-- Do not inspect or modify this small local workspace; it exists only to hold losh and Codex session metadata.
-- The built-in apply_patch tool is intentionally blocked because it would edit local files. Make remote edits through shell commands. Prefer safe, atomic writes and inspect a file again before replacing it.
-- Do not run ssh yourself. losh already owns the authenticated connection.
+- The workspace root is %q. Shell commands begin there.
+- Use shell commands and apply_patch normally; losh routes their effects to the workspace.
+- Do not inspect the harness metadata directory directly.
+- Do not run ssh yourself. losh owns the workspace connection.
 - Never print secrets merely to inspect them. Redact secret values from explanations and logs.
-- State the target hostname before consequential service, package, privilege, or destructive operations.
-`, s.Target, rootDescription)
-	return atomicWrite(filepath.Join(s.Workspace, "AGENTS.md"), []byte(instructions), 0600)
+- Confirm consequential service, package, privilege, or destructive operations with the user.
+`, rootDescription)
+	if err := atomicWrite(filepath.Join(s.Workspace, "AGENTS.md"), []byte(instructions), 0400); err != nil {
+		return err
+	}
+	if err := os.Chmod(filepath.Join(s.Workspace, ".codex", "hooks.json"), 0400); err != nil {
+		return err
+	}
+	if err := os.Chmod(filepath.Join(s.Workspace, ".codex"), 0500); err != nil {
+		return err
+	}
+	return os.Chmod(s.Workspace, 0500)
 }
 
 func listSessions(out io.Writer) error {
@@ -488,6 +514,7 @@ Options:
   -r, --resume       Resume Codex's most recent conversation for this target/root
       --root PATH    Set the remote working root (useful for ambiguous targets)
       --skip-probe   Skip the initial SSH connectivity and shell probe
+      --no-install   Fail instead of installing a missing/incompatible losh-server
 
 Examples:
   losh akrentsel@fuzz.foo.com

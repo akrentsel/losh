@@ -3,6 +3,7 @@ set -eu
 
 prefix=${PREFIX:-"$HOME/.local"}
 binary=
+servers=
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
 usage() {
@@ -11,15 +12,16 @@ Install losh from a source checkout or an existing binary.
 
 Usage:
   ./scripts/install.sh [--prefix DIR]
-  ./scripts/install.sh --binary PATH [--prefix DIR]
+  ./scripts/install.sh --binary PATH [--servers DIR] [--prefix DIR]
 
 Options:
   --binary PATH  Install an already-built binary instead of building with Go.
+  --servers DIR  Install prebuilt server bundles from DIR.
   --prefix DIR   Installation prefix. Defaults to $HOME/.local.
   -h, --help     Show this help.
 
-The executable is installed at PREFIX/bin/losh. This script does not modify
-shell startup files and does not install anything on an SSH target.
+The client is installed at PREFIX/bin/losh and server bundles under
+PREFIX/libexec/losh. Targets are bootstrapped later through ordinary SSH.
 USAGE
 }
 
@@ -28,6 +30,11 @@ while [ "$#" -gt 0 ]; do
         --binary)
             [ "$#" -ge 2 ] || { echo "install.sh: --binary requires a path" >&2; exit 2; }
             binary=$2
+            shift 2
+            ;;
+        --servers)
+            [ "$#" -ge 2 ] || { echo "install.sh: --servers requires a directory" >&2; exit 2; }
+            servers=$2
             shift 2
             ;;
         --prefix)
@@ -64,7 +71,14 @@ if [ -z "$binary" ]; then
     tmp_dir=$(mktemp -d)
     echo "Building losh..."
     (cd "$repo_root" && go build -o "$tmp_dir/losh" ./cmd/losh)
+    mkdir -p "$tmp_dir/servers/linux-amd64" "$tmp_dir/servers/linux-arm64" \
+        "$tmp_dir/servers/darwin-amd64" "$tmp_dir/servers/darwin-arm64"
+    (cd "$repo_root" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$tmp_dir/servers/linux-amd64/losh-server" ./cmd/losh)
+    (cd "$repo_root" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o "$tmp_dir/servers/linux-arm64/losh-server" ./cmd/losh)
+    (cd "$repo_root" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o "$tmp_dir/servers/darwin-amd64/losh-server" ./cmd/losh)
+    (cd "$repo_root" && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o "$tmp_dir/servers/darwin-arm64/losh-server" ./cmd/losh)
     binary=$tmp_dir/losh
+    servers=$tmp_dir/servers
 fi
 
 [ -f "$binary" ] || { echo "install.sh: binary not found: $binary" >&2; exit 1; }
@@ -75,6 +89,19 @@ mkdir -p "$install_dir"
 install -m 0755 "$binary" "$install_dir/losh"
 
 echo "Installed losh to $install_dir/losh"
+
+if [ -z "$servers" ] && [ -d "$(dirname -- "$binary")/servers" ]; then
+    servers=$(dirname -- "$binary")/servers
+fi
+if [ -n "$servers" ]; then
+    [ -d "$servers" ] || { echo "install.sh: server bundle directory not found: $servers" >&2; exit 1; }
+    server_install_dir=$prefix/libexec/losh/servers
+    mkdir -p "$server_install_dir"
+    cp -R "$servers"/. "$server_install_dir"/
+    echo "Installed server bundles to $server_install_dir"
+else
+    echo "No cross-platform server bundles installed; same-platform targets remain supported." >&2
+fi
 
 case ":${PATH:-}:" in
     *":$install_dir:"*) ;;

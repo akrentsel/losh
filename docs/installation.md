@@ -1,228 +1,299 @@
 # Installing losh
 
-losh is installed only on the **client machine**: the machine where Codex runs
-and where you begin the SSH connection. The target machine does not need losh,
-Codex, a model credential, an open port, or a system service.
+Install losh on the **client machine**, where Codex runs and where you initiate
+SSH. On first use, the client automatically installs a small versioned
+`losh-server` binary under the remote user's home directory.
 
 ## Topology
 
-    client machine                       target machine
-    ──────────────                       ──────────────
-    losh
-    authenticated Codex   ─── SSH ───▶   sshd + POSIX sh
-    ~/.losh state                        project, services, logs
+```text
+client/login machine                           target machine
+--------------------                           --------------
+losh + authenticated Codex
+~/.losh conversations/sessions  --- SSH --->   ~/.local/lib/losh/server/<version>/
+bundled server binaries                        ~/.local/state/losh/ operation records
+                                               project, services, logs
+```
 
-Before installing, this should already work from the client:
+The target does not receive Codex, model credentials, conversation state, an
+SSH agent, or a new public listening port. `losh-server` runs with the
+permissions of the SSH account and needs no sudo or system service.
 
-    ssh user@target true
+## Requirements
 
-## Requirements on the client
+Client:
 
 - macOS or Linux;
-- OpenSSH client;
+- system OpenSSH;
 - Codex CLI installed and authenticated;
-- network and SSH credentials for the target;
-- Go 1.22+ only when building losh from source.
+- network access and SSH credentials for the target;
+- Go 1.22+ only for source builds.
 
-Confirm the first three:
+Target:
 
-    ssh -V
-    codex --version
-    codex login status
+- a reachable SSH server;
+- Linux or macOS on AMD64 or ARM64;
+- `/bin/sh`;
+- a writable home directory and permission to execute the uploaded helper;
+- permission for the requested commands/files.
 
-If Codex is not authenticated, start it and complete its sign-in flow:
+Verify the client and connection:
 
-    codex
+```sh
+ssh -V
+codex --version
+codex login status
+ssh user@target 'command -v sh && uname -s && uname -m'
+```
 
-The Codex installation and sign-in happen on the client, never on the target.
-See the [official OpenAI Codex quickstart](https://developers.openai.com/codex/quickstart)
-for current Codex setup instructions.
+If Codex is not authenticated, run `codex` and complete its login flow on the
+client. See the [official OpenAI Codex quickstart](https://developers.openai.com/codex/quickstart).
 
-## Requirements on the target
+## Recommended: Homebrew
 
-The current pure-SSH backend requires:
+```sh
+brew install akrentsel/tap/losh
+```
 
-- an SSH server reachable by the client;
-- the intended remote account;
-- a POSIX sh at /bin/sh;
-- permission to perform whatever work the user requests.
+Homebrew adds the tap automatically. Existing installations can be upgraded:
 
-Check it:
+```sh
+brew update
+brew upgrade akrentsel/tap/losh
+```
 
-    ssh user@target 'command -v sh && printf TARGET_OK\n'
+The formula builds the local client and bundles server executables for
+Linux/macOS AMD64/ARM64. Codex is a separate client dependency:
 
-Nothing is installed remotely by the current prototype.
+```sh
+brew install --cask codex
+```
 
-## Install today: build from source
+## Build and install from source
 
-Clone the public repository:
+```sh
+git clone https://github.com/akrentsel/losh.git
+cd losh
+./scripts/install.sh
+```
 
-    git clone https://github.com/akrentsel/losh.git
-    cd losh
+This builds and installs:
 
-    ./scripts/install.sh
+```text
+$HOME/.local/bin/losh
+$HOME/.local/libexec/losh/servers/
+  linux-amd64/losh-server
+  linux-arm64/losh-server
+  darwin-amd64/losh-server
+  darwin-arm64/losh-server
+```
 
-This builds with Go and installs to:
+Choose another prefix with `--prefix`:
 
-    $HOME/.local/bin/losh
+```sh
+./scripts/install.sh --prefix /usr/local
+```
 
-If that directory is not already in PATH, the installer prints the exact export
-line to add to the shell configuration. The installer does not edit startup
-files automatically.
+The installer does not use sudo, modify shell startup files, or connect to any
+target. If the bin directory is not in `PATH`, it prints the export line to add.
 
-Choose another prefix when needed:
+To install prebuilt client/server artifacts:
 
-    ./scripts/install.sh --prefix /usr/local
+```sh
+./scripts/install.sh \
+  --binary ./bin/losh \
+  --servers ./bin/servers
+```
 
-A system prefix may require running the installer with suitable permissions.
-Prefer a user-owned prefix when possible.
+If only a client binary is supplied, same-OS/same-architecture targets can use
+that binary as the helper. Cross-platform targets require the matching bundle.
 
-## Install today: existing binary
+Development builds:
 
-If a trusted, architecture-compatible binary has already been built:
+```sh
+make test
+make build
+./bin/losh version
+./bin/losh __server version
+```
 
-    ./scripts/install.sh --binary ./bin/losh
+## First connection and automatic remote installation
 
-Or select a prefix:
+Run:
 
-    ./scripts/install.sh --binary ./bin/losh --prefix /opt/losh
+```sh
+losh user@target
+```
 
-The installer copies one executable. It does not create a daemon or modify the
-SSH configuration.
+Expected first-use messages resemble:
 
-To build the binary without installing it:
+```text
+Connecting to user@target...
+Installing losh-server 0.2.0 for linux/amd64...
+Installed losh-server.
+```
 
-    make test
-    make build
-    ./bin/losh version
+The client:
 
-## Recommended installation: Homebrew
+1. connects with normal OpenSSH and host-key verification;
+2. detects `uname -s` and `uname -m`;
+3. checks the installed server version;
+4. selects the bundled binary for the target;
+5. uploads it through the authenticated SSH connection to a private temporary
+   file;
+6. sets executable permissions and atomically renames it into the versioned
+   install path;
+7. verifies the remote server version before starting Codex.
 
-Install directly from the public tap:
+The target does not need internet access. A later client version installs into
+a different versioned directory, so active operations do not lose their
+executable. losh never silently falls back to weaker direct shell execution.
 
-    brew install akrentsel/tap/losh
+Use `--no-install` when you want a missing or incompatible helper to be an
+error:
 
-Homebrew adds the tap automatically. Alternatively:
+```sh
+losh user@target --no-install
+```
 
-    brew tap akrentsel/tap
-    brew install losh
+The current development release supports `LOSH_SERVER_BINARY=/path/to/binary`
+for testing an explicit server artifact.
 
-The formula builds the tagged source release with Go as a build-time dependency
-and installs the single `losh` executable. Codex remains a separate runtime
-prerequisite and can be installed with `brew install --cask codex`.
+## Remote and local state
 
-## Verify after installation
+Client state defaults to `$HOME/.losh` and can be moved with `LOSH_HOME`:
 
-On the client:
+```text
+~/.losh/
+├── control/                     OpenSSH multiplexing sockets
+├── sessions/<id>/
+│   ├── session.json
+│   └── calls/                   pending shell payloads
+└── workspaces/<id>/
+    ├── AGENTS.md                generated transparent workspace instructions
+    └── .codex/hooks.json
+```
 
-    command -v losh
-    losh version
-    codex login status
-    ssh user@target true
+Remote state:
 
-Then start an interactive session:
+```text
+~/.local/lib/losh/server/<version>/losh-server
+~/.local/state/losh/operations/<operation-id>/
+  request.json
+  status.json
+  stdout
+  stderr
+```
 
-    losh user@target
+Remote operation records let the client query the same operation after an SSH
+disconnect instead of resubmitting it. Commands run in detached workers.
+Terminal output is currently returned at command completion; streaming and
+interactive PTYs are still future work.
 
-Start in a remote directory:
+## Start, choose a root, and resume
 
-    losh user@target:/srv/app
+```sh
+# Remote user's home
+losh user@target
 
-Resume the most recent conversation for that exact target and root:
+# Explicit workspace
+losh user@target:/srv/app
+losh user@target --root /srv/app
 
-    losh user@target:/srv/app --resume
+# Same target/root conversation
+losh user@target:/srv/app --resume
 
-Inspect local session records:
+# List local session records
+losh sessions
+```
 
-    losh sessions
+Arguments after `--` go to Codex:
 
-By default, state is stored under $HOME/.losh. Set LOSH_HOME to use another
-location.
+```sh
+losh user@target:/srv/app -- --model gpt-5.6-sol
+```
 
-## What first run creates
+Codex may ask you to trust the generated project hook. Review that it invokes
+the expected local losh executable.
 
-Only the client changes:
+## Current apply_patch behavior
 
-    ~/.losh/
-    ├── control/                    multiplexed SSH sockets
-    ├── sessions/<id>/
-    │   ├── session.json
-    │   └── calls/                  short-lived command payloads
-    └── workspaces/<id>/
-        ├── AGENTS.md
-        └── .codex/hooks.json
+Shell commands are rewritten to a local losh wrapper and executed as durable
+remote server operations.
 
-Codex may ask the user to trust the generated project hook. Review it and accept
-only if its command points to the expected losh executable.
+Codex's current hook API can observe/block/rewrite the `apply_patch` input,
+but cannot substitute a custom executor result for the native patch tool. The
+current adapter therefore:
 
-No losh directory is created on the target in pure-SSH mode.
+1. sends the original patch to `losh-server`;
+2. waits for a committed remote result;
+3. blocks the duplicate local patch;
+4. tells Codex that the remote patch completed.
+
+Codex continues correctly, and subsequent shell verification sees the remote
+change. The CLI currently prints the native call as blocked even when the hook
+message says the remote patch succeeded. This is a known integration limitation,
+not an indication that the confirmed remote edit failed.
+
+The local metadata workspace is read-only between generated updates, reducing
+the effect of a hook failure that might otherwise let the local patch continue.
 
 ## Noninteractive smoke test
 
-For development and CI, Codex exec requires permission to run outside a Git
-repository and the generated hook must be trusted explicitly:
+```sh
+losh user@target -- \
+  exec \
+  --skip-git-repo-check \
+  --sandbox danger-full-access \
+  --dangerously-bypass-hook-trust \
+  'Do not modify anything. Report hostname, user, and current directory.'
+```
 
-    losh user@target -- \
-      exec \
-      --skip-git-repo-check \
-      --sandbox danger-full-access \
-      --dangerously-bypass-hook-trust \
-      'Do not modify anything. Report hostname, user, and current directory.'
+These Codex flags are for controlled development. `danger-full-access` removes
+Codex's local shell sandbox, and bypassing hook trust runs generated hooks
+without review.
 
-Those flags are intended for a controlled smoke test. In particular,
-danger-full-access removes Codex's local shell sandbox for that run. This is
-currently necessary because the local losh wrapper must open an SSH connection.
-It is not the intended final approval design.
+Repository developers can run the direct integration test:
 
-The production design needs a losh-owned approval boundary before rewritten
-tool calls execute.
+```sh
+make build
+LOSH_SERVER_BINARY=$PWD/bin/losh \
+LOSH_INTEGRATION_TARGET=user@target \
+go test ./cmd/losh -run TestRemoteServerIntegration -v
+```
 
-## Reproduced two-machine installation
-
-The development topology used to verify this guide was:
-
-    loshy2.exe.xyz                    loshy.exe.xyz
-    ──────────────                    ─────────────
-    /exe.dev/bin/losh
-    Codex CLI 0.158.0   ─── SSH ───▶  exedev account
-    ~/.losh sessions                  /bin/sh
-
-The binary was copied to the client and installed:
-
-    scp bin/losh loshy2.exe.xyz:/tmp/losh
-    ssh loshy2.exe.xyz \
-      'sudo install -m 0755 /tmp/losh /exe.dev/bin/losh && rm /tmp/losh'
-
-Then, on loshy2:
-
-    losh exedev@loshy.exe.xyz
-
-The test confirmed that:
-
-- Codex and ~/.losh state lived on loshy2;
-- generated shell actions executed on loshy;
-- --resume restored the same Codex session on loshy2;
-- no losh executable or cache was installed on loshy.
-
-The /exe.dev/bin path is specific to that test image, not a general
-installation recommendation.
+It installs/verifies the helper, creates a uniquely named temporary workspace,
+executes a command, applies a patch, verifies deduplication, and removes that
+test workspace.
 
 ## Uninstall
 
-Remove the installed executable:
+Remove a Homebrew client:
 
-    rm $HOME/.local/bin/losh
+```sh
+brew uninstall losh
+```
 
-For a system prefix, remove the corresponding PREFIX/bin/losh with the required
-permissions.
+Or remove a source installation:
 
-Local session state is separate. Inspect it before choosing to remove it:
+```sh
+rm $HOME/.local/bin/losh
+rm -r $HOME/.local/libexec/losh
+```
 
-    losh sessions
-    find $HOME/.losh -maxdepth 2 -type f -print
+Inspect local state before removing it:
 
-Deleting $HOME/.losh removes losh's session index, generated workspaces, and
-control sockets. Codex may also retain its own conversation records according
-to Codex's storage behavior.
+```sh
+losh sessions
+find $HOME/.losh -maxdepth 3 -type f -print
+```
 
-Nothing needs to be uninstalled from a pure-SSH target.
+On a target, inspect remote state before removal:
+
+```sh
+find $HOME/.local/lib/losh $HOME/.local/state/losh -maxdepth 4 -type f -print
+```
+
+Removing remote server/state directories deletes retained operation results and
+deduplication history. Do that only when no losh operation is running and no
+client may reconnect to an unresolved operation.
