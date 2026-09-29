@@ -312,8 +312,12 @@ func TestRemoteNodeScriptReportsExecutionEnvironment(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(display, prefix), ")")), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["cwd"] != root {
-		t.Fatalf("remote cwd = %q, want %q", got["cwd"], root)
+	wantRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["cwd"] != wantRoot {
+		t.Fatalf("remote cwd = %q, want %q", got["cwd"], wantRoot)
 	}
 	if got["home"] == "" {
 		t.Fatal("remote home is empty")
