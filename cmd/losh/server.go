@@ -95,7 +95,7 @@ func serverStartOperation(request rpcRequest) rpcResponse {
 	if request.OperationID == "" || request.Digest == "" {
 		return rpcResponse{Error: "start requires operation_id and digest"}
 	}
-	if request.Kind != "exec" && request.Kind != "patch" && request.Kind != "fs-read" && request.Kind != "fs-write" && request.Kind != "fs-edit" {
+	if request.Kind != "exec" && request.Kind != "patch" && request.Kind != "fs-read" && request.Kind != "fs-write" && request.Kind != "fs-edit" && request.Kind != "fs-list" {
 		return rpcResponse{Error: fmt.Sprintf("unsupported operation kind %q", request.Kind)}
 	}
 	if got := operationDigest(request.Kind, request.Root, request.Payload); got != request.Digest {
@@ -193,7 +193,7 @@ func runServerWorker(opDir string) error {
 		return runExecWorker(opDir, record)
 	case "patch":
 		return runPatchWorker(opDir, record)
-	case "fs-read", "fs-write", "fs-edit":
+	case "fs-read", "fs-write", "fs-edit", "fs-list":
 		return runClaudeFileWorker(opDir, record)
 	default:
 		return finishOperation(opDir, operationStatus{State: "failed", Result: "unsupported operation kind", UpdatedAt: time.Now().UTC()})

@@ -24,7 +24,7 @@ func configPath() string {
 func configuredHarness() (string, error) {
 	data, err := os.ReadFile(configPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return harnessCodex, nil
+		return harnessClaude, nil
 	}
 	if err != nil {
 		return "", err
@@ -81,7 +81,7 @@ func runSetup(in io.Reader, out io.Writer) error {
 	current, err := configuredHarness()
 	if err != nil {
 		fmt.Fprintf(out, "Warning: existing configuration is invalid: %v\nIt will be replaced when you make a selection.\n\n", err)
-		current = harnessCodex
+		current = harnessClaude
 	}
 
 	fmt.Fprintln(out, "losh setup")

@@ -129,8 +129,7 @@ also asks whether to skip the harness's native permission prompts. That setting
 is disabled by default. Enabling it adds `--yolo` when launching Codex and
 `--dangerously-skip-permissions` when launching Claude Code; remote routing
 still applies, but the harness may act without another approval prompt. Run
-`losh` or `losh setup` again to change either setting. The default harness
-remains Codex when no configuration exists.
+`losh` or `losh setup` again to change either setting. When no configuration exists, Claude Code is the default harness.
 
 The saved harness choice applies whenever `--harness` is omitted. Override it
 for one connection with `--harness codex` or `--harness claude`.

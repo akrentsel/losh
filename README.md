@@ -271,14 +271,14 @@ architectures.
 
 ### Keep the transport independent of the harness
 
-Codex remains the implicit default; Claude Code is selected explicitly:
+Claude Code is the default when no saved preference exists. The setup choice is
+persistent, and either harness can be selected explicitly:
 
-    losh user@example.com                       # --harness codex
-    losh user@example.com --harness codex
+    losh user@example.com                       # saved choice, initially Claude
     losh user@example.com --harness claude
+    losh user@example.com --harness codex
 
-`--harness claude` runs Claude Code locally; it does not install Claude on
-the target. SSH execution, target identity, approvals, durable operations, and
+Claude Code runs locally; losh does not install it on the target. SSH execution, target identity, approvals, durable operations, and
 audit records should remain in the shared losh core. Each harness adapter owns
 only its local CLI invocation, instructions, tool interception, and resume
 mechanism. Harness identity must be included in session metadata so a Codex
@@ -338,6 +338,16 @@ Write become durable structured server operations; Edit uses exact
 Because Claude hooks also cannot inject an arbitrary native success result,
 losh blocks the local duplicate and returns the confirmed remote result in the
 hook reason. Glob, Grep, and NotebookEdit are blocked and retried through Bash.
+
+Claude `@` mentions are backed by a generated, local stdio MCP resource server.
+Typing `@` shows up to 5,000 likely UTF-8 text workspace files; Claude
+displays them as `losh:losh://workspace/...` and the underlying resource URI is
+`losh://workspace/...`. Selecting one fetches its current contents from `losh-server`
+through the reconnecting read path and attaches it to the prompt. Hidden paths,
+symlinks, common dependency trees, files over 16 MiB, and entries beyond the
+prototype limit are omitted. This is a read-only presentation layer: remote
+files remain authoritative and all edits still use the durable filesystem hooks.
+
 ### Let OpenSSH remain OpenSSH
 
 The prototype invokes the system ssh executable rather than reimplementing the

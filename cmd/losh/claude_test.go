@@ -24,8 +24,8 @@ func TestParseClaudeHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if defaults.harness != harnessCodex {
-		t.Fatalf("default harness = %q, want codex", defaults.harness)
+	if defaults.harness != harnessClaude {
+		t.Fatalf("default harness = %q, want claude", defaults.harness)
 	}
 	if _, _, err := parseArgs([]string{"prod", "--harness", "unknown"}); err == nil {
 		t.Fatal("expected unsupported harness to fail")
@@ -38,7 +38,7 @@ func TestClaudeLaunchArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--settings", "/tmp/losh workspace/.claude/settings.json", "--model", "sonnet", "--resume", "session-name"}
+	want := []string{"--settings", "/tmp/losh workspace/.claude/settings.json", "--model", "sonnet", "--resume", "session-name", "--mcp-config", "/tmp/losh workspace/.claude/mcp.json"}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("Claude args = %#v, want %#v", got, want)
 	}
@@ -48,6 +48,13 @@ func TestClaudeLaunchArgs(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(dangerous, " "), "--dangerously-skip-permissions") {
 		t.Fatalf("Claude dangerous args = %#v", dangerous)
+	}
+	promptArgs, err := harnessLaunchArgs(harnessClaude, false, "", false, []string{"initial prompt"}, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := promptArgs[len(promptArgs)-3:]; strings.Join(got, "|") != "initial prompt|--mcp-config|/tmp/losh workspace/.claude/mcp.json" {
+		t.Fatalf("Claude prompt/MCP args = %#v", promptArgs)
 	}
 	if _, err := harnessLaunchArgs(harnessClaude, false, "", false, []string{"--settings", "unsafe.json"}, s); err == nil {
 		t.Fatal("expected Claude settings override to fail")
@@ -91,11 +98,19 @@ func TestMaterializeClaudeWorkspace(t *testing.T) {
 		_ = os.Chmod(s.Workspace, 0700)
 		_ = os.Chmod(filepath.Join(s.Workspace, ".claude"), 0700)
 		_ = os.Chmod(filepath.Join(s.Workspace, ".claude", "settings.json"), 0600)
+		_ = os.Chmod(filepath.Join(s.Workspace, ".claude", "mcp.json"), 0600)
 		_ = os.Chmod(filepath.Join(s.Workspace, "CLAUDE.md"), 0600)
 	}()
 	data, err := os.ReadFile(filepath.Join(s.Workspace, ".claude", "settings.json"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	mcpData, err := os.ReadFile(filepath.Join(s.Workspace, ".claude", "mcp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mcpData), "__mcp") || !strings.Contains(string(mcpData), s.ID) {
+		t.Fatalf("unexpected MCP config: %s", mcpData)
 	}
 	var settings map[string]any
 	if err := json.Unmarshal(data, &settings); err != nil {
@@ -219,4 +234,105 @@ func marshalClaudeOperation(t *testing.T, operation claudeFileOperation) string 
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestClaudeResourceListAndRawRead(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "main.go"), []byte("package main\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".git", "secret"), []byte("hidden"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "database.db"), []byte("SQLite format 3\x00binary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	listPayload := marshalClaudeOperation(t, claudeFileOperation{MaxEntries: 100})
+	result, err := applyClaudeFileOperation(root, "fs-list", listPayload, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing mcpResourceList
+	if err := json.Unmarshal([]byte(result), &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Files) != 1 || listing.Files[0].Path != "src/main.go" {
+		t.Fatalf("unexpected resource list: %#v", listing)
+	}
+
+	readPayload := marshalClaudeOperation(t, claudeFileOperation{Path: "src/main.go", Raw: true})
+	result, err = applyClaudeFileOperation(root, "fs-read", readPayload, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "package main\n" {
+		t.Fatalf("raw resource = %q", result)
+	}
+}
+
+func TestClaudeResourceURI(t *testing.T) {
+	uri := claudeResourceURI("src/a file.go")
+	if uri != "losh://workspace/src/a%20file.go" {
+		t.Fatalf("resource URI = %q", uri)
+	}
+	path, err := claudeResourcePath(uri)
+	if err != nil || path != filepath.Join("src", "a file.go") {
+		t.Fatalf("resource path = %q, %v", path, err)
+	}
+	for _, invalid := range []string{"file:///etc/passwd", "losh://workspace/../secret", "losh://other/file"} {
+		if _, err := claudeResourcePath(invalid); err == nil {
+			t.Fatalf("claudeResourcePath(%q) unexpectedly succeeded", invalid)
+		}
+	}
+}
+
+func TestClaudeMCPTranscript(t *testing.T) {
+	t.Setenv("LOSH_HOME", t.TempDir())
+	s, err := ensureSession("worker@example.com", "/srv/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := mcpRemoteFileOperation
+	mcpRemoteFileOperation = func(_ session, _ string, kind, payload string) (string, error) {
+		switch kind {
+		case "fs-list":
+			return `{"files":[{"path":"src/main.go","size":13}]}`, nil
+		case "fs-read":
+			var op claudeFileOperation
+			if err := json.Unmarshal([]byte(payload), &op); err != nil {
+				return "", err
+			}
+			if op.Path != "src/main.go" || !op.Raw {
+				t.Fatalf("unexpected read operation: %#v", op)
+			}
+			return "package main\n", nil
+		default:
+			t.Fatalf("unexpected operation kind %q", kind)
+			return "", nil
+		}
+	}
+	defer func() { mcpRemoteFileOperation = previous }()
+
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"losh://workspace/src/main.go"}}`,
+	}, "\n")
+	var output strings.Builder
+	if err := runClaudeMCP(s.ID, strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{"2025-06-18", "losh://workspace/src/main.go", "package main\\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("MCP output missing %q: %s", want, got)
+		}
+	}
 }

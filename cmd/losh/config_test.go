@@ -14,8 +14,8 @@ func TestConfiguredHarnessDefaultsAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != harnessCodex {
-		t.Fatalf("default harness = %q, want codex", got)
+	if got != harnessClaude {
+		t.Fatalf("default harness = %q, want claude", got)
 	}
 
 	if err := saveConfiguredHarness(harnessClaude); err != nil {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type claudeFileOperation struct {
@@ -19,6 +20,8 @@ type claudeFileOperation struct {
 	ReplaceAll bool   `json:"replace_all,omitempty"`
 	Offset     int    `json:"offset,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
+	Raw        bool   `json:"raw,omitempty"`
+	MaxEntries int    `json:"max_entries,omitempty"`
 }
 
 func harnessDisplayName(harness string) string {
@@ -60,6 +63,7 @@ func harnessLaunchArgs(harness string, resume bool, resumeSession string, danger
 			args = append(args, resumeSession)
 		}
 	}
+	args = append(args, "--mcp-config", filepath.Join(s.Workspace, ".claude", "mcp.json"))
 	return args, nil
 }
 
@@ -92,6 +96,24 @@ func materializeClaudeWorkspace(s session, exe, configDir string) error {
 		return err
 	}
 
+	mcpConfig := map[string]any{
+		"mcpServers": map[string]any{
+			"losh": map[string]any{
+				"type":    "stdio",
+				"command": exe,
+				"args":    []string{"__mcp", s.ID},
+			},
+		},
+	}
+	mcpData, err := json.MarshalIndent(mcpConfig, "", "  ")
+	if err != nil {
+		return err
+	}
+	mcpPath := filepath.Join(configDir, "mcp.json")
+	if err := atomicWrite(mcpPath, append(mcpData, byte(10)), 0600); err != nil {
+		return err
+	}
+
 	root := "$HOME"
 	if s.RemoteRoot != "" {
 		root = s.RemoteRoot
@@ -110,6 +132,9 @@ func materializeClaudeWorkspace(s session, exe, configDir string) error {
 		return err
 	}
 	if err := os.Chmod(settingsPath, 0400); err != nil {
+		return err
+	}
+	if err := os.Chmod(mcpPath, 0400); err != nil {
 		return err
 	}
 	if err := os.Chmod(configDir, 0500); err != nil {
@@ -244,6 +269,9 @@ func applyClaudeFileOperation(root, kind, payload, operationDir string) (string,
 	if err := json.Unmarshal([]byte(payload), &op); err != nil {
 		return "", fmt.Errorf("decode file operation: %w", err)
 	}
+	if kind == "fs-list" {
+		return listClaudeFileResources(root, op.MaxEntries)
+	}
 	path, err := secureWorkspacePath(root, op.Path)
 	if err != nil {
 		return "", err
@@ -263,6 +291,12 @@ func applyClaudeFileOperation(root, kind, payload, operationDir string) (string,
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return "", err
+		}
+		if op.Raw {
+			if !utf8.Valid(data) {
+				return "", errors.New("resource is not valid UTF-8 text")
+			}
+			return string(data), nil
 		}
 		lines := strings.Split(string(data), "\n")
 		if len(lines) > 0 && lines[len(lines)-1] == "" {
@@ -339,4 +373,91 @@ func applyClaudeFileOperation(root, kind, payload, operationDir string) (string,
 	default:
 		return "", fmt.Errorf("unsupported Claude file operation %q", kind)
 	}
+}
+
+var errClaudeResourceLimit = errors.New("Claude resource listing limit reached")
+
+func listClaudeFileResources(root string, maxEntries int) (string, error) {
+	if maxEntries <= 0 {
+		maxEntries = 5000
+	}
+	if maxEntries > 20000 {
+		maxEntries = 20000
+	}
+	listing := mcpResourceList{Files: make([]claudeFileResource, 0, maxEntries)}
+	skippedDirectories := map[string]bool{
+		"node_modules": true,
+		"target":       true,
+		"vendor":       true,
+		"venv":         true,
+	}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if path == root {
+				return walkErr
+			}
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+		name := entry.Name()
+		if entry.IsDir() {
+			if strings.HasPrefix(name, ".") || skippedDirectories[name] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasPrefix(name, ".") || entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 16<<20 || !isLikelyTextFile(path, info.Size()) {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		listing.Files = append(listing.Files, claudeFileResource{Path: filepath.ToSlash(relative), Size: info.Size()})
+		if len(listing.Files) >= maxEntries {
+			listing.Truncated = true
+			return errClaudeResourceLimit
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errClaudeResourceLimit) {
+		return "", err
+	}
+	data, err := json.Marshal(listing)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func isLikelyTextFile(path string, size int64) bool {
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	buffer := make([]byte, 8192)
+	count, err := file.Read(buffer)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false
+	}
+	sample := buffer[:count]
+	for _, value := range sample {
+		if value == 0 {
+			return false
+		}
+	}
+	if size > int64(count) && len(sample) > utf8.UTFMax-1 {
+		sample = sample[:len(sample)-(utf8.UTFMax-1)]
+	}
+	return utf8.Valid(sample)
 }

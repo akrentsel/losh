@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const version = "0.4.1"
+const version = "0.5.0"
 
 const (
 	harnessCodex  = "codex"
@@ -91,6 +91,11 @@ func run(args []string) error {
 				return err
 			}
 			return nil
+		case "__mcp":
+			if len(args) != 2 {
+				return errors.New("invalid MCP server invocation")
+			}
+			return runClaudeMCP(args[1], os.Stdin, os.Stdout)
 		case "__exec-file":
 			if len(args) != 3 {
 				return errors.New("invalid remote execution invocation")
@@ -131,7 +136,7 @@ func run(args []string) error {
 }
 
 func parseArgs(args []string) (options, []string, error) {
-	out := options{harness: harnessCodex}
+	out := options{harness: harnessClaude}
 	var harnessArgs []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
