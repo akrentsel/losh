@@ -278,14 +278,14 @@ func TestClaudeResourceListAndRawRead(t *testing.T) {
 
 func TestClaudeResourceURI(t *testing.T) {
 	uri := claudeResourceURI("src/a file.go")
-	if uri != "losh://workspace/src/a%20file.go" {
+	if uri != "file:///src/a%20file.go" {
 		t.Fatalf("resource URI = %q", uri)
 	}
 	path, err := claudeResourcePath(uri)
 	if err != nil || path != filepath.Join("src", "a file.go") {
 		t.Fatalf("resource path = %q, %v", path, err)
 	}
-	for _, invalid := range []string{"file:///etc/passwd", "losh://workspace/../secret", "losh://other/file"} {
+	for _, invalid := range []string{"https://example.com/file", "file://other/secret", "file:///../secret"} {
 		if _, err := claudeResourcePath(invalid); err == nil {
 			t.Fatalf("claudeResourcePath(%q) unexpectedly succeeded", invalid)
 		}
@@ -323,14 +323,14 @@ func TestClaudeMCPTranscript(t *testing.T) {
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"losh://workspace/src/main.go"}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"file:///src/main.go"}}`,
 	}, "\n")
 	var output strings.Builder
 	if err := runClaudeMCP(s.ID, strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()
-	for _, want := range []string{"2025-06-18", "losh://workspace/src/main.go", "package main\\n"} {
+	for _, want := range []string{"2025-06-18", "file:///src/main.go", "package main\\n"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("MCP output missing %q: %s", want, got)
 		}

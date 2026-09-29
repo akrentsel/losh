@@ -341,9 +341,9 @@ hook reason. Glob, Grep, and NotebookEdit are blocked and retried through Bash.
 
 Claude `@` mentions are backed by a generated, local stdio MCP resource server.
 Typing `@` shows up to 5,000 likely UTF-8 text workspace files; Claude
-displays them as `losh:losh://workspace/...` and the underlying resource URI is
-`losh://workspace/...`. Selecting one fetches its current contents from `losh-server`
-through the reconnecting read path and attaches it to the prompt. Hidden paths,
+displays them as `losh:file:///...`; the `losh:` prefix identifies the generated
+MCP server and `file:///...` is the workspace-relative resource URI. Selecting
+one fetches its current contents from `losh-server` through the reconnecting read path and attaches it to the prompt. Hidden paths,
 symlinks, common dependency trees, files over 16 MiB, and entries beyond the
 prototype limit are omitted. This is a read-only presentation layer: remote
 files remain authoritative and all edits still use the durable filesystem hooks.

@@ -153,7 +153,7 @@ func mcpCallID(kind, value string) string {
 }
 
 func claudeResourceURI(path string) string {
-	return (&url.URL{Scheme: "losh", Host: "workspace", Path: "/" + filepath.ToSlash(path)}).String()
+	return (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(path)}).String()
 }
 
 func claudeResourcePath(value string) (string, error) {
@@ -161,7 +161,7 @@ func claudeResourcePath(value string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid workspace resource URI: %w", err)
 	}
-	if parsed.Scheme != "losh" || parsed.Host != "workspace" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.Scheme != "file" || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("resource URI is not in the active losh workspace")
 	}
 	path := strings.TrimPrefix(parsed.Path, "/")
