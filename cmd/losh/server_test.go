@@ -256,7 +256,10 @@ func TestRemoteServerIntegration(t *testing.T) {
 	if _, err := callRemoteRPC(homeSession, disconnectRequest); err != nil {
 		t.Fatal(err)
 	}
-	closeArgs := append(sshBaseArgs(homeSession), "-O", "exit", homeSession.Target)
+	closeArgs, err := sshCommandArgs(homeSession, "-O", "exit", homeSession.Target)
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = exec.Command("ssh", closeArgs...).Run()
 	time.Sleep(1200 * time.Millisecond)
 	disconnected, err := callRemoteRPC(homeSession, rpcRequest{Method: "status", OperationID: disconnectID})

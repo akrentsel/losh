@@ -12,10 +12,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
-const version = "0.3.1"
+const version = "0.3.2"
 
 const (
 	harnessCodex  = "codex"
@@ -295,7 +296,11 @@ func resumeHint(s session, harness string) string {
 }
 
 func probe(s session) error {
-	args := append(sshBaseArgs(s), s.Target, "sh -c 'command -v sh >/dev/null && printf LOSH_OK'")
+	baseArgs, err := sshBaseArgs(s)
+	if err != nil {
+		return err
+	}
+	args := append(baseArgs, s.Target, "sh -c 'command -v sh >/dev/null && printf LOSH_OK'")
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdin = os.Stdin
 	out, err := cmd.Output()
@@ -424,9 +429,63 @@ func remotePrelude(root string) string {
 	return "cd -- " + shellQuote(root) + " || exit $?\n"
 }
 
-func sshBaseArgs(s session) []string {
-	control := filepath.Join(stateRoot(), "control", s.ID[:16])
-	return []string{"-o", "ControlMaster=auto", "-o", "ControlPersist=10m", "-o", "ControlPath=" + control}
+func sshBaseArgs(s session) ([]string, error) {
+	dir, err := ensureControlDirectory()
+	if err != nil {
+		return nil, fmt.Errorf("prepare SSH control directory: %w", err)
+	}
+	id := safeName(s.ID)
+	if len(id) < 16 {
+		return nil, errors.New("invalid session ID for SSH control socket")
+	}
+	control := filepath.Join(dir, id[:16])
+	return []string{
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPersist=10m",
+		"-o", "ControlPath=" + control,
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=2",
+		"-o", "ConnectTimeout=10",
+		"-o", "ConnectionAttempts=1",
+	}, nil
+}
+
+func sshCommandArgs(s session, trailing ...string) ([]string, error) {
+	base, err := sshBaseArgs(s)
+	if err != nil {
+		return nil, err
+	}
+	return append(base, trailing...), nil
+}
+
+func ensureControlDirectory() (string, error) {
+	// Hook commands run inside the harness sandbox. That sandbox can reuse a
+	// socket under ~/.losh, but it cannot create a replacement there after a
+	// sleeping laptop drops the original SSH master. A private, short-lived
+	// directory under /tmp remains writable for reconnects and keeps Unix socket
+	// paths comfortably below the macOS length limit.
+	rootHash := shortHash(stateRoot())[:8]
+	dir := filepath.Join("/tmp", fmt.Sprintf("losh-%d-%s", os.Getuid(), rootHash))
+	if err := os.Mkdir(dir, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+		return "", err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%s is not a private directory", dir)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || int(stat.Uid) != os.Getuid() {
+		return "", fmt.Errorf("%s is not owned by the current user", dir)
+	}
+	if info.Mode().Perm() != 0700 {
+		if err := os.Chmod(dir, 0700); err != nil {
+			return "", err
+		}
+	}
+	return dir, nil
 }
 
 func ensureSession(target, root string) (session, error) {
@@ -464,9 +523,6 @@ func loadSession(id string) (session, error) {
 func saveSession(s session) error {
 	dir := sessionDir(s.ID)
 	if err := os.MkdirAll(filepath.Join(dir, "calls"), 0700); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Join(stateRoot(), "control"), 0700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(s, "", "  ")

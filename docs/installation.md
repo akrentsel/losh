@@ -189,7 +189,6 @@ Client state defaults to `$HOME/.losh` and can be moved with `LOSH_HOME`:
 ```text
 ~/.losh/
 ├── config.json                  default local coding harness
-├── control/                     OpenSSH multiplexing sockets
 ├── sessions/<id>/
 │   ├── session.json
 │   └── calls/                   pending shell payloads
@@ -201,6 +200,12 @@ Client state defaults to `$HOME/.losh` and can be moved with `LOSH_HOME`:
 ```
 
 Remote state:
+OpenSSH multiplexing sockets are ephemeral rather than durable state. losh
+creates them in a private `0700` directory named
+`/tmp/losh-<uid>-<state-hash>/`. This location is short enough for macOS Unix
+socket limits and writable by the harness sandbox, allowing the next tool call
+to replace a dead SSH master after laptop sleep.
+
 
 ```text
 ~/.local/lib/losh/server/<version>/losh-server

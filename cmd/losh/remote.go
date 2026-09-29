@@ -81,7 +81,10 @@ func ensureRemoteServer(s session, allowInstall bool) error {
 }
 
 func remotePlatform(s session) (string, string, error) {
-	args := append(sshBaseArgs(s), s.Target, "sh -c "+shellQuote("uname -s; uname -m"))
+	args, err := sshCommandArgs(s, s.Target, "sh -c "+shellQuote("uname -s; uname -m"))
+	if err != nil {
+		return "", "", err
+	}
 	out, err := exec.Command("ssh", args...).Output()
 	if err != nil {
 		return "", "", err
@@ -159,7 +162,10 @@ func uploadRemoteServer(s session, localPath string) error {
 		"chmod 700 \"$tmp\" || exit $?\n" +
 		"mv -f \"$tmp\" \"$dir/losh-server\" || exit $?\n" +
 		"trap - EXIT HUP INT TERM\n"
-	args := append(sshBaseArgs(s), s.Target, "sh -c "+shellQuote(script))
+	args, err := sshCommandArgs(s, s.Target, "sh -c "+shellQuote(script))
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command("ssh", args...)
 	cmd.Stdin = file
 	cmd.Stdout = os.Stdout
@@ -168,7 +174,10 @@ func uploadRemoteServer(s session, localPath string) error {
 }
 
 func remoteServerVersion(s session) (string, error) {
-	args := append(sshBaseArgs(s), s.Target, remoteServerShellPath()+" __server version")
+	args, err := sshCommandArgs(s, s.Target, remoteServerShellPath()+" __server version")
+	if err != nil {
+		return "", err
+	}
 	cmd := exec.Command("ssh", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -191,7 +200,10 @@ func callRemoteRPC(s session, request rpcRequest) (rpcResponse, error) {
 
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
-		args := append(sshBaseArgs(s), s.Target, remoteServerShellPath()+" __server rpc")
+		args, argsErr := sshCommandArgs(s, s.Target, remoteServerShellPath()+" __server rpc")
+		if argsErr != nil {
+			return response, argsErr
+		}
 		cmd := exec.Command("ssh", args...)
 		cmd.Stdin = bytes.NewReader(data)
 		var stdout, stderr bytes.Buffer

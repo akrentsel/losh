@@ -307,7 +307,6 @@ State lives under **~/.losh**. Set LOSH_HOME to override it.
 
     ~/.losh/
     ├── config.json                 default local coding harness
-    ├── control/                    OpenSSH multiplexing sockets
     ├── sessions/<session-id>/
     │   ├── session.json            target, root, harness IDs, and timestamps
     │   └── calls/                  short-lived pending commands
@@ -318,6 +317,11 @@ State lives under **~/.losh**. Set LOSH_HOME to override it.
         └── .claude/settings.json   generated Claude hooks, when used
 
 Workspace labels retain ASCII letters, digits, `.`, `@`, `-`, and `_`;
+Ephemeral OpenSSH multiplexing sockets live in a private `0700` runtime
+directory named `/tmp/losh-<uid>-<state-hash>/`. Keeping them outside
+`~/.losh` lets a sandboxed harness replace a dead master connection after
+laptop sleep while retaining short Unix-socket paths on macOS.
+
 other character runs become `_`, and labels are capped at 48 characters. The
 full session ID remains in the name, preventing sanitized-label collisions.
 
@@ -428,7 +432,10 @@ a disconnect, losh may not know whether the command ran.
 
 The implemented baseline reconnects RPC calls, deduplicates requests with
 durable operation IDs, runs accepted commands in detached workers, and replays
-terminal output/status. The next transport milestone is streaming output by
+terminal output/status. SSH masters use keepalives and a sandbox-writable
+runtime socket, so a tool call after laptop sleep can discard a dead transport
+and establish a fresh connection without resubmitting an accepted operation.
+The next transport milestone is streaming output by
 offset, interactive attachment/cancellation, explicit target epochs, and
 failure injection around every journal transition, reboot, and result-retention
 boundary.

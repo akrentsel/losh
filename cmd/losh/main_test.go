@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,6 +52,57 @@ func TestWorkspacePath(t *testing.T) {
 				t.Fatalf("workspacePath(%q) basename = %q, want %q", tt.target, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSSHControlPathSupportsSandboxReconnect(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("LOSH_HOME", home)
+	s := session{ID: strings.Repeat("a", 24)}
+
+	args, err := sshBaseArgs(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPath := ""
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "ControlPath=") {
+			controlPath = strings.TrimPrefix(arg, "ControlPath=")
+		}
+	}
+	if controlPath == "" {
+		t.Fatalf("SSH args have no ControlPath: %#v", args)
+	}
+	if strings.HasPrefix(controlPath, home) {
+		t.Fatalf("control path %q is inside sandbox-inaccessible LOSH_HOME", controlPath)
+	}
+	if !strings.HasPrefix(controlPath, "/tmp/losh-") {
+		t.Fatalf("control path %q is not in the private runtime directory", controlPath)
+	}
+	if len(controlPath)+18 >= 104 {
+		t.Fatalf("control path %q leaves no room for OpenSSH's temporary suffix", controlPath)
+	}
+	dir := filepath.Dir(controlPath)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0700 {
+		t.Fatalf("control directory permissions = %o, want 700", info.Mode().Perm())
+	}
+
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sshBaseArgs(s); err != nil {
+		t.Fatalf("recreate control directory after loss: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"ServerAliveInterval=15", "ServerAliveCountMax=2", "ConnectTimeout=10"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("SSH args missing %q: %s", want, joined)
+		}
 	}
 }
 
