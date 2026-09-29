@@ -41,7 +41,7 @@ func TestRunSetupExplainsAndSavesSelection(t *testing.T) {
 	t.Setenv("LOSH_HOME", t.TempDir())
 	t.Setenv("PATH", "")
 	var output strings.Builder
-	if err := runSetup(strings.NewReader("invalid\n2\n"), &output); err != nil {
+	if err := runSetup(strings.NewReader("invalid\n2\ny\n"), &output); err != nil {
 		t.Fatal(err)
 	}
 	got, err := configuredHarness()
@@ -51,11 +51,21 @@ func TestRunSetupExplainsAndSavesSelection(t *testing.T) {
 	if got != harnessClaude {
 		t.Fatalf("configured harness = %q, want claude", got)
 	}
+	dangerous, err := configuredSkipPermissions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dangerous {
+		t.Fatal("dangerously_skip_permissions was not saved")
+	}
 	for _, want := range []string{
 		"credentials, and conversation state",
 		"target does not need the coding agent",
 		"Please enter 1 for Codex or 2 for Claude Code.",
 		"Claude Code is now the default",
+		"--yolo",
+		"--dangerously-skip-permissions",
+		"Native permission prompts will be skipped",
 		"not currently on PATH",
 	} {
 		if !strings.Contains(output.String(), want) {

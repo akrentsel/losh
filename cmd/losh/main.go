@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,7 +18,7 @@ import (
 	"time"
 )
 
-const version = "0.3.2"
+const version = "0.4.0"
 
 const (
 	harnessCodex  = "codex"
@@ -43,14 +45,15 @@ type hookInput struct {
 }
 
 type options struct {
-	target        string
-	root          string
-	resume        bool
-	resumeSession string
-	skipProbe     bool
-	noInstall     bool
-	harness       string
-	harnessSet    bool
+	target                     string
+	root                       string
+	resume                     bool
+	resumeSession              string
+	skipProbe                  bool
+	noInstall                  bool
+	harness                    string
+	harnessSet                 bool
+	dangerouslySkipPermissions bool
 }
 
 func main() {
@@ -119,6 +122,10 @@ func run(args []string) error {
 		if err != nil {
 			return fmt.Errorf("load configuration: %w (run 'losh setup' to repair it)", err)
 		}
+	}
+	opts.dangerouslySkipPermissions, err = configuredSkipPermissions()
+	if err != nil {
+		return fmt.Errorf("load configuration: %w (run 'losh setup' to repair it)", err)
 	}
 	return start(opts, harnessArgs)
 }
@@ -216,7 +223,7 @@ func start(opts options, harnessArgs []string) error {
 		return err
 	}
 
-	args, err := harnessLaunchArgs(opts.harness, opts.resume, opts.resumeSession, harnessArgs, s)
+	args, err := harnessLaunchArgs(opts.harness, opts.resume, opts.resumeSession, opts.dangerouslySkipPermissions, harnessArgs, s)
 	if err != nil {
 		return err
 	}
@@ -243,12 +250,16 @@ func start(opts options, harnessArgs []string) error {
 	return nil
 }
 
-func codexBaseArgs() []string {
-	return []string{"--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"}
+func codexBaseArgs(dangerouslySkipPermissions bool) []string {
+	args := []string{"--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"}
+	if dangerouslySkipPermissions {
+		args = append(args, "--yolo")
+	}
+	return args
 }
 
-func codexLaunchArgs(resume bool, resumeSession string, codexArgs []string) ([]string, error) {
-	args := codexBaseArgs()
+func codexLaunchArgs(resume bool, resumeSession string, dangerouslySkipPermissions bool, codexArgs []string) ([]string, error) {
+	args := codexBaseArgs(dangerouslySkipPermissions)
 	if !resume {
 		return append(args, codexArgs...), nil
 	}
@@ -364,6 +375,43 @@ func runHook(sessionID, harness string, in io.Reader, out io.Writer) error {
 				"updatedInput":       input.ToolInput,
 			},
 		})
+	case "node_repl", "node_repl.js":
+		if harness != harnessCodex {
+			return nil
+		}
+		code, ok := input.ToolInput["code"].(string)
+		if !ok || code == "" {
+			return errors.New("node_repl hook did not contain code")
+		}
+		callID := safeName(input.SessionID + "-" + input.ToolUseID)
+		if callID == "" {
+			callID = shortHash(code + time.Now().UTC().String())
+		}
+		s, err := loadSession(sessionID)
+		if err != nil {
+			return err
+		}
+		stdout, stderr, err := remoteNodeREPLRunner(s, callID, code)
+		if err != nil {
+			reason := "losh could not run node_repl on the remote workspace: " + err.Error()
+			if detail := strings.TrimSpace(string(stderr)); detail != "" {
+				reason += "\n" + detail
+			}
+			return denyTool(out, reason)
+		}
+		replacement, err := nodeREPLDisplayCode(stdout, stderr)
+		if err != nil {
+			return denyTool(out, "losh received an invalid remote node_repl result: "+err.Error())
+		}
+		input.ToolInput["code"] = replacement
+		input.ToolInput["title"] = "Remote node_repl result"
+		return json.NewEncoder(out).Encode(map[string]any{
+			"hookSpecificOutput": map[string]any{
+				"hookEventName":      "PreToolUse",
+				"permissionDecision": "allow",
+				"updatedInput":       input.ToolInput,
+			},
+		})
 	case "apply_patch":
 		patchText, ok := input.ToolInput["command"].(string)
 		if !ok || patchText == "" {
@@ -402,6 +450,100 @@ func runHook(sessionID, harness string, in io.Reader, out io.Writer) error {
 	default:
 		return nil
 	}
+}
+
+const remoteNodeValueMarker = "__LOSH_NODE_VALUE__"
+
+var remoteNodeREPLRunner = runRemoteNodeREPL
+
+func denyTool(out io.Writer, reason string) error {
+	return json.NewEncoder(out).Encode(map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "deny",
+			"permissionDecisionReason": reason,
+		},
+	})
+}
+
+func remoteNodeScript(code string) string {
+	return "const os = require(\"os\");\n" +
+		"globalThis.nodeRepl = Object.freeze({\n" +
+		"  cwd: process.cwd(),\n" +
+		"  homeDir: os.homedir(),\n" +
+		"  write(value) {\n" +
+		"    const json = JSON.stringify(value === undefined ? null : value);\n" +
+		"    process.stdout.write(" + fmt.Sprintf("%q", remoteNodeValueMarker) + " + Buffer.from(json).toString(\"base64\") + \"\\n\");\n" +
+		"  }\n" +
+		"});\n" +
+		"(async () => {\n" + code + "\n" +
+		"})().catch((error) => {\n" +
+		"  console.error(error && error.stack ? error.stack : String(error));\n" +
+		"  process.exitCode = 1;\n" +
+		"});\n"
+}
+
+func runRemoteNodeREPL(s session, callID, code string) ([]byte, []byte, error) {
+	command := "command -v node >/dev/null 2>&1 || { echo 'node is not installed on the remote target' >&2; exit 127; }\n" +
+		"exec node -e " + shellQuote(remoteNodeScript(code))
+	response, err := runRemoteOperation(s, callID, "exec", command)
+	if err != nil {
+		return response.Stdout, response.Stderr, err
+	}
+	if response.State == "uncertain" {
+		return response.Stdout, response.Stderr, errors.New("remote node_repl outcome is uncertain; losh will not run it again automatically")
+	}
+	if response.State == "failed" {
+		return response.Stdout, response.Stderr, fmt.Errorf("remote node_repl failed: %s", response.Result)
+	}
+	if response.ExitCode != 0 {
+		return response.Stdout, response.Stderr, fmt.Errorf("remote node_repl exited with status %d", response.ExitCode)
+	}
+	return response.Stdout, response.Stderr, nil
+}
+
+func nodeREPLDisplayCode(stdout, stderr []byte) (string, error) {
+	var value json.RawMessage
+	var ordinary bytes.Buffer
+	for _, line := range bytes.Split(stdout, []byte{'\n'}) {
+		if bytes.HasPrefix(line, []byte(remoteNodeValueMarker)) {
+			encoded := strings.TrimPrefix(string(line), remoteNodeValueMarker)
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return "", fmt.Errorf("decode nodeRepl.write value: %w", err)
+			}
+			if !json.Valid(decoded) {
+				return "", errors.New("nodeRepl.write returned invalid JSON")
+			}
+			value = append(value[:0], decoded...)
+			continue
+		}
+		if len(line) > 0 {
+			ordinary.Write(line)
+			ordinary.WriteByte('\n')
+		}
+	}
+
+	logs := strings.TrimSpace(ordinary.String())
+	errText := strings.TrimSpace(string(stderr))
+	if len(value) > 0 && logs == "" && errText == "" {
+		return "nodeRepl.write(" + string(value) + ")", nil
+	}
+	result := map[string]any{"remote": true}
+	if len(value) > 0 {
+		result["value"] = value
+	}
+	if logs != "" {
+		result["stdout"] = logs
+	}
+	if errText != "" {
+		result["stderr"] = errText
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return "", err
+	}
+	return "nodeRepl.write(" + string(data) + ")", nil
 }
 
 func runCommandFile(sessionID, callID string) error {
@@ -569,7 +711,7 @@ func materializeWorkspace(s session, harness string) error {
 				"matcher": "^(startup|resume|clear|compact)$",
 				"hooks":   []any{map[string]any{"type": "command", "command": hookCommand, "timeout": 10}}}},
 			"PreToolUse": []any{map[string]any{
-				"matcher": "^(Bash|apply_patch)$",
+				"matcher": "^(Bash|apply_patch|node_repl(?:[.]js)?)$",
 				"hooks":   []any{map[string]any{"type": "command", "command": hookCommand, "timeout": 600, "statusMessage": "Routing workspace operation through losh"}}}},
 		},
 	}

@@ -13,8 +13,9 @@ agent's actions on a selected remote host.
     > Find out why nginx is returning 502s. Explain the cause and ask before
       changing anything.
 
-The model session, provider authentication, policy, and session index remain on
-your computer. On first connection, losh uploads a small versioned server
+The complete model session—including conversation history and resume state—along
+with provider authentication, policy, and the session index remains on your
+computer. On first connection, losh uploads a small versioned server
 through SSH into the remote user's home directory. It needs no sudo, model
 credential, public port, or system service.
 
@@ -27,6 +28,21 @@ credential, public port, or system service.
 Running a coding agent directly on every server means installing and updating
 it everywhere, copying login state to each host, consuming resources on small
 machines, and scattering conversations across the fleet.
+
+Your agent stays continuous even when the machines do not: conversation history,
+session state, approvals, and credentials remain local while you move between
+targets or replace a server.
+
+The practical benefits are:
+
+- **zero manual setup on the target:** losh installs its matching helper over
+  SSH without sudo, a public daemon, or model credentials;
+- **one local login and installation:** your existing Codex or Claude Code
+  authentication works across every SSH target;
+- **resumable conversations:** session history remains local and can be selected
+  through the picker or resumed directly by name or ID;
+- **safe reconnection:** after sleep or a network change, losh reconnects and
+  retrieves accepted operations without blindly submitting them twice.
 
 losh reverses that arrangement:
 
@@ -85,6 +101,9 @@ Implemented:
 - durable operation IDs, remote journals, detached command workers, and result replay;
 - remote roots such as **prod:/srv/api**;
 - Codex shell interception with remote stdout, stderr, and exit status;
+- experimental Codex `node_repl` interception: JavaScript runs through the
+  durable remote-operation path when Node.js is available on the target, and
+  the resulting value is returned through the native local REPL presentation;
 - Claude Bash interception, atomic remote Read/Edit/Write operations, native
   picker/direct resume, and session-ID capture;
 - blocking of Claude Glob, Grep, and NotebookEdit with instructions
@@ -95,6 +114,15 @@ Implemented:
 
 Current limitations:
 
+- remote `node_repl` support is an experimental, stateless prototype. Each call
+  starts a fresh remote Node.js process, so variables do not persist between
+  calls. The compatibility shim currently provides `nodeRepl.cwd`,
+  `nodeRepl.homeDir`, and `nodeRepl.write`; Codex-injected tool proxies and the
+  rest of the native REPL host API are not yet reproduced remotely. losh checks
+  for `node` lazily when the tool is invoked and fails closed with a clear error
+  when it is unavailable. The remote execution path has been tested directly,
+  but a natural Codex tool call still needs verification on a client where
+  `node_repl.js` is exposed;
 - Codex's user-invoked shell mode bypasses tool hooks and currently runs in the
   local metadata workspace. Do not use it for remote commands. The tested
   `$SHELL` wrapper was not invoked; the feasibility result is documented in
@@ -137,9 +165,12 @@ Anthropic's supported installer.
 
 Run `losh` with no arguments after installation. Its setup screen explains the
 local-harness/remote-target model, shows whether Codex and Claude Code are on
-`PATH`, and saves the default harness in `~/.losh/config.json`. Running `losh`
-again reopens setup. An explicit `--harness codex` or `--harness claude`
-overrides the saved default for one connection.
+`PATH`, and saves the default harness in `~/.losh/config.json`. It also lets you
+choose whether the harness skips native permission prompts by default. This is
+off unless explicitly enabled; when enabled, losh adds `--yolo` for Codex or
+`--dangerously-skip-permissions` for Claude Code. Running `losh` again reopens
+setup. An explicit `--harness codex` or `--harness claude` overrides the saved
+default for one connection.
 
 ### 1. Check the prerequisites
 
@@ -285,6 +316,21 @@ the target and functional for Codex, although current Codex UI presents the
 native tool call as blocked. The generated instructions otherwise describe an
 ordinary workspace rather than teaching the model a separate remote workflow.
 
+For Codex `node_repl`/`node_repl.js`, the pre-hook sends the proposed JavaScript
+through the same durable remote `exec` operation. The remote bootstrap exposes
+the target working directory and home as `nodeRepl.cwd` and
+`nodeRepl.homeDir`, captures values written with `nodeRepl.write`, and returns a
+rewritten display-only call to the native local REPL. The original JavaScript
+therefore never inspects or changes the local metadata workspace.
+
+Node.js is an optional target capability. losh deliberately performs a lazy
+`command -v node` check when a REPL call occurs instead of adding a connection
+negotiation step or installing Node automatically. A missing runtime blocks that
+tool call without affecting Bash, patch, or filesystem operations. The REPL
+evaluation is assigned the normal stable operation ID, so a dropped SSH
+connection queries its recorded result rather than evaluating the JavaScript
+again.
+
 
 For Claude, Bash is rewritten through the same command wrapper. Read, Edit, and
 Write become durable structured server operations; Edit uses exact
@@ -306,7 +352,7 @@ channels with separate output and exit status.
 State lives under **~/.losh**. Set LOSH_HOME to override it.
 
     ~/.losh/
-    ├── config.json                 default local coding harness
+    ├── config.json                 default harness and permission-prompt policy
     ├── sessions/<session-id>/
     │   ├── session.json            target, root, harness IDs, and timestamps
     │   └── calls/                  short-lived pending commands

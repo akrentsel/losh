@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -223,10 +226,10 @@ func TestCodexLaunchArgs(t *testing.T) {
 			wantSuffix:    "exec --json resume 01abc continue working",
 		},
 	}
-	base := strings.Join(codexBaseArgs(), " ")
+	base := strings.Join(codexBaseArgs(false), " ")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := codexLaunchArgs(tt.resume, tt.resumeSession, tt.codexArgs)
+			got, err := codexLaunchArgs(tt.resume, tt.resumeSession, false, tt.codexArgs)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -240,7 +243,7 @@ func TestCodexLaunchArgs(t *testing.T) {
 		})
 	}
 
-	if _, err := codexLaunchArgs(true, "", []string{"exec", "prompt"}); err == nil {
+	if _, err := codexLaunchArgs(true, "", false, []string{"exec", "prompt"}); err == nil {
 		t.Fatal("expected picker-style exec resume to fail")
 	}
 }
@@ -255,10 +258,17 @@ func TestRemotePrelude(t *testing.T) {
 }
 
 func TestCodexBaseArgsEnableNetwork(t *testing.T) {
-	got := strings.Join(codexBaseArgs(), " ")
+	got := strings.Join(codexBaseArgs(false), " ")
 	want := "--sandbox workspace-write -c sandbox_workspace_write.network_access=true"
 	if got != want {
-		t.Fatalf("codexBaseArgs() = %q, want %q", got, want)
+		t.Fatalf("codexBaseArgs(false) = %q, want %q", got, want)
+	}
+}
+
+func TestCodexBaseArgsCanSkipPermissions(t *testing.T) {
+	got := strings.Join(codexBaseArgs(true), " ")
+	if !strings.Contains(got, "--yolo") {
+		t.Fatalf("codexBaseArgs(true) = %q, want --yolo", got)
 	}
 }
 
@@ -276,5 +286,118 @@ func TestResumeHintHome(t *testing.T) {
 	want := "losh 'example.com' --resume"
 	if got != want {
 		t.Fatalf("resumeHint() = %q, want %q", got, want)
+	}
+}
+
+func TestRemoteNodeScriptReportsExecutionEnvironment(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node is not installed")
+	}
+	root := t.TempDir()
+	cmd := exec.Command("node", "-e", remoteNodeScript("nodeRepl.write({cwd: nodeRepl.cwd, home: nodeRepl.homeDir})"))
+	cmd.Dir = root
+	stdout, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	display, err := nodeREPLDisplayCode(stdout, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := "nodeRepl.write("
+	if !strings.HasPrefix(display, prefix) || !strings.HasSuffix(display, ")") {
+		t.Fatalf("display code = %q", display)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimSuffix(strings.TrimPrefix(display, prefix), ")")), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["cwd"] != root {
+		t.Fatalf("remote cwd = %q, want %q", got["cwd"], root)
+	}
+	if got["home"] == "" {
+		t.Fatal("remote home is empty")
+	}
+}
+
+func TestNodeREPLDisplayCodePreservesLogs(t *testing.T) {
+	value := base64.StdEncoding.EncodeToString([]byte("{\"answer\":42}"))
+	stdout := []byte("before\n" + remoteNodeValueMarker + value + "\nafter\n")
+	display, err := nodeREPLDisplayCode(stdout, []byte("warning\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(display, "\"remote\":true") ||
+		!strings.Contains(display, "\"stdout\":\"before\\nafter\"") ||
+		!strings.Contains(display, "\"stderr\":\"warning\"") ||
+		!strings.Contains(display, "\"value\":{\"answer\":42}") {
+		t.Fatalf("display code did not preserve remote output: %s", display)
+	}
+}
+
+func TestCodexHooksIncludeNodeREPL(t *testing.T) {
+	t.Setenv("LOSH_HOME", t.TempDir())
+	s, err := ensureSession("worker@example.com", "/srv/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(s.Workspace, 0700)
+		_ = os.Chmod(filepath.Join(s.Workspace, ".codex"), 0700)
+	})
+	if err := materializeWorkspace(s, harnessCodex); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(s.Workspace, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "node_repl") {
+		t.Fatalf("Codex hooks do not match node_repl: %s", data)
+	}
+}
+
+func TestNodeREPLHookRewritesResultFromRemoteRunner(t *testing.T) {
+	t.Setenv("LOSH_HOME", t.TempDir())
+	s, err := ensureSession("worker@example.com", "/srv/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	original := remoteNodeREPLRunner
+	t.Cleanup(func() { remoteNodeREPLRunner = original })
+	remoteNodeREPLRunner = func(gotSession session, callID, code string) ([]byte, []byte, error) {
+		if gotSession.ID != s.ID || gotSession.RemoteRoot != "/srv/app" {
+			t.Fatalf("runner session = %#v", gotSession)
+		}
+		if callID != "codex-thread-tool-1" {
+			t.Fatalf("runner call ID = %q", callID)
+		}
+		if !strings.Contains(code, "nodeRepl.cwd") {
+			t.Fatalf("runner code = %q", code)
+		}
+		value := base64.StdEncoding.EncodeToString([]byte("{\"cwd\":\"/srv/app\",\"home\":\"/home/worker\"}"))
+		return []byte(remoteNodeValueMarker + value + "\n"), nil, nil
+	}
+
+	input := `{"session_id":"codex-thread","hook_event_name":"PreToolUse","tool_name":"node_repl.js","tool_use_id":"tool-1","tool_input":{"code":"nodeRepl.write({cwd: nodeRepl.cwd, home: nodeRepl.homeDir})","title":"Check workspace"}}`
+	var output strings.Builder
+	if err := runHook(s.ID, harnessCodex, strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal([]byte(output.String()), &response); err != nil {
+		t.Fatal(err)
+	}
+	specific := response["hookSpecificOutput"].(map[string]any)
+	if specific["permissionDecision"] != "allow" {
+		t.Fatalf("hook decision = %#v", specific)
+	}
+	updated := specific["updatedInput"].(map[string]any)
+	if updated["code"] != `nodeRepl.write({"cwd":"/srv/app","home":"/home/worker"})` {
+		t.Fatalf("updated node_repl code = %q", updated["code"])
+	}
+	if updated["title"] != "Remote node_repl result" {
+		t.Fatalf("updated title = %q", updated["title"])
 	}
 }

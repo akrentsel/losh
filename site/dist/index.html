@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Keep credentials, conversation history, and agent session state local while Codex or Claude Code works on any machine you can SSH into.">
+  <meta name="theme-color" content="#ffffff">
+  <title>losh — coding agents over SSH</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/site.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="losh home">
+      <span class="brand-mark" aria-hidden="true"><span>~</span><span class="prompt">›</span></span>
+      <span class="brand-name">losh</span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/akrentsel/losh">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="status-dot"></span> LLM over SSH</p>
+        <h1>Your coding agent,<br><span>over SSH.</span></h1>
+        <p class="lede">Keep your agent, credentials, conversation history, and session state on your machine. Let it read, edit, and run commands on any server you can SSH into.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#install">Install losh</a>
+          <a class="button quiet" href="https://github.com/akrentsel/losh">View source <span aria-hidden="true">↗</span></a>
+        </div>
+        <ul class="proof" aria-label="Key properties">
+          <li>Sessions stay local</li>
+          <li>No credentials on the target</li>
+          <li>No public daemon</li>
+          <li>Reconnects after sleep</li>
+        </ul>
+      </div>
+
+      <div class="connection-figure" aria-label="A local terminal running losh connects over SSH to a remote server">
+        <div class="terminal-wrap">
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span>Terminal</span>
+            <span class="terminal-host">worker@gpu-box</span>
+            <span class="secure">SSH</span>
+          </div>
+          <div class="terminal-body">
+            <p><span class="t-prompt">$</span> <span class="t-command">losh worker@gpu-box:/srv/model</span></p>
+            <p class="t-muted">Connecting to worker@gpu-box…</p>
+            <p class="t-success">Connected · Claude Code · /srv/model</p>
+            <p class="spaced"><span class="agent">you</span> Find out why the training job stopped.</p>
+            <p class="spaced"><span class="agent">claude</span> I’ll inspect the job logs and Slurm queue on gpu-box.</p>
+            <p class="t-muted">Reading slurm-48291.out</p>
+            <p class="t-muted">Running squeue --me</p>
+            <p class="t-command">The job exceeded its memory allocation. I can reduce the batch size and resubmit it.</p>
+            <p class="cursor-line"><span class="cursor"></span></p>
+          </div>
+        </div>
+          <div class="terminal-shadow" aria-hidden="true"></div>
+          <div class="laptop-base" aria-hidden="true"></div>
+        </div>
+        <div class="ssh-path" aria-hidden="true"><span>SSH</span></div>
+        <div class="server-figure" aria-hidden="true">
+          <div class="server-unit"><i></i><b></b><b></b></div>
+          <div class="server-unit"><i></i><b></b><b></b></div>
+          <div class="server-unit"><i></i><b></b><b></b></div>
+          <span>gpu-box</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="compatibility" aria-label="Supported tools">
+      <span>Works with</span>
+      <strong>Codex</strong>
+      <strong>Claude Code</strong>
+      <span>over OpenSSH</span>
+    </section>
+
+    <section class="benefits section" aria-labelledby="benefits-title">
+      <div class="benefits-heading">
+        <div>
+          <p class="eyebrow">Why losh</p>
+          <h2 id="benefits-title">Install once.<br>Use every server.</h2>
+        </div>
+        <p>Keep the coding-agent experience you already have on your computer, then point it at any machine your SSH configuration can reach.</p>
+      </div>
+      <div class="benefit-grid">
+        <article>
+          <span>01</span>
+          <h3>Zero remote setup</h3>
+          <p>If SSH works, losh uploads its matching helper automatically. No sudo, public daemon, API key, or manual agent install.</p>
+        </article>
+        <article>
+          <span>02</span>
+          <h3>Local auth and state</h3>
+          <p>Your Codex or Claude login, approvals, conversation history, and session index remain on your machine.</p>
+        </article>
+        <article>
+          <span>03</span>
+          <h3>Resume any conversation</h3>
+          <p>Return through the session picker or resume a conversation directly by name or ID—even if the target was replaced.</p>
+        </article>
+        <article>
+          <span>04</span>
+          <h3>Reconnect without repeating work</h3>
+          <p>Close your laptop or change networks. Stable operation IDs let losh recover accepted work instead of submitting it twice.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="how section" id="how">
+      <div class="how-intro">
+        <div>
+          <p class="eyebrow">What actually happens</p>
+          <h2>The agent runs here.<br><span>The work happens there.</span></h2>
+        </div>
+        <p class="how-summary">losh does not copy your project into a pretend local workspace, and it does not install Codex or Claude Code on the server. It gives your local agent two remote interfaces: one for processes and one for files.</p>
+      </div>
+
+      <div class="boundary" aria-label="A tool call travels from the local coding agent over SSH to losh-server on the target machine, which returns the result and an acknowledgement">
+        <article class="boundary-side local-side">
+          <span class="place-label">Your machine</span>
+          <div class="boundary-mark" aria-hidden="true">⌘</div>
+          <h3>Codex or Claude stays local</h3>
+          <p>You talk to the normal coding agent. Your login, conversation, approvals, and session history never need to leave your computer.</p>
+          <div class="kept-here" aria-label="Kept on your machine"><span>credentials</span><span>conversation</span><span>approvals</span></div>
+        </article>
+
+        <div class="operation-lane" aria-hidden="true">
+          <span class="operation-out">tool call&nbsp; →</span>
+          <div class="lane-mark">~›</div>
+          <span class="lane-label">SSH · operation ID</span>
+          <span class="operation-back">← &nbsp;result + ACK</span>
+        </div>
+
+        <article class="boundary-side remote-side">
+          <span class="place-label">Target machine</span>
+          <div class="boundary-mark" aria-hidden="true">▦</div>
+          <h3>losh-server does the work</h3>
+          <p>A small helper, installed automatically over SSH, performs each operation inside the real remote project and sends the result back.</p>
+          <div class="kept-here remote-tags" aria-label="Kept on the target machine"><span>project</span><span>processes</span><span>services</span></div>
+        </article>
+      </div>
+
+      <div class="tool-map" aria-label="How coding agent tools map to the remote machine">
+        <div class="tool-map-intro"><span>When the agent asks to…</span><span>losh makes it happen on the target</span></div>
+        <div class="tool-row"><code>Read</code><p>Read the remote file and return its contents.</p><span class="tool-result">contents ←</span></div>
+        <div class="tool-row"><code>Edit / Write</code><p>Apply the change remotely, then confirm it committed.</p><span class="tool-result">committed ✓</span></div>
+        <div class="tool-row"><code>Bash</code><p>Run in the remote project and return the output and exit status.</p><span class="tool-result">stdout · stderr · $?</span></div>
+      </div>
+
+      <p class="operation-note"><strong>Why the acknowledgement matters:</strong> every request has a stable operation ID. If SSH drops after the server accepts one, losh asks for that same operation again instead of blindly running it twice.</p>
+    </section>
+
+    <section class="reconnect section">
+      <div class="reconnect-card">
+        <div>
+          <p class="eyebrow">Built for the part where Wi-Fi disappears</p>
+          <h2>Close the laptop.<br>Bike to work. Continue.</h2>
+          <p>Accepted commands keep running remotely. When your machine wakes up, losh establishes a fresh SSH connection, asks for the same operation, and returns its result without submitting it twice.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="install section" id="install">
+      <div class="section-heading">
+        <p class="eyebrow">macOS or Linux</p>
+        <h2>Up and running<br>in two commands.</h2>
+      </div>
+      <div class="install-grid">
+        <div class="command-card">
+          <div class="command-label"><span>01</span> Install</div>
+          <div class="copy-row">
+            <code>brew install akrentsel/tap/losh</code>
+            <button class="copy-button" type="button" data-copy="brew install akrentsel/tap/losh" aria-label="Copy install command">Copy</button>
+          </div>
+        </div>
+        <div class="command-card">
+          <div class="command-label"><span>02</span> Connect</div>
+          <div class="copy-row">
+            <code>losh user@host:/your/project</code>
+            <button class="copy-button" type="button" data-copy="losh user@host:/your/project" aria-label="Copy connection command">Copy</button>
+          </div>
+        </div>
+      </div>
+      <p class="install-note">The target only needs SSH, <code>/bin/sh</code>, and a writable home directory. losh installs its matching helper automatically.</p>
+    </section>
+
+    <section class="closing section">
+      <h2>Any machine you can SSH into.<br><span>Now you can talk to it.</span></h2>
+      <a class="button primary" href="https://github.com/akrentsel/losh">Explore losh on GitHub <span aria-hidden="true">↗</span></a>
+    </section>
+  </main>
+
+  <footer>
+    <a class="brand footer-brand" href="#top"><span class="brand-mark" aria-hidden="true"><span>~</span><span class="prompt">›</span></span><span class="brand-name">losh</span></a>
+    <p>Local agent. Remote workspace.</p>
+    <div><a href="https://github.com/akrentsel/losh/blob/main/README.md">Docs</a><a href="https://github.com/akrentsel/losh">GitHub</a><span>MIT License</span></div>
+  </footer>
+</body>
+</html>

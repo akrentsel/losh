@@ -124,12 +124,16 @@ losh
 
 The setup screen explains which state stays local and which operations run on
 the SSH target. It detects whether Codex and Claude Code are on `PATH` and saves
-the selection in `$LOSH_HOME/config.json` (normally `~/.losh/config.json`). Run
-`losh` or `losh setup` again to change it. The default remains Codex when no
-configuration exists.
+the selection in `$LOSH_HOME/config.json` (normally `~/.losh/config.json`). It
+also asks whether to skip the harness's native permission prompts. That setting
+is disabled by default. Enabling it adds `--yolo` when launching Codex and
+`--dangerously-skip-permissions` when launching Claude Code; remote routing
+still applies, but the harness may act without another approval prompt. Run
+`losh` or `losh setup` again to change either setting. The default harness
+remains Codex when no configuration exists.
 
-The saved choice applies whenever `--harness` is omitted. Override it for one
-connection with `--harness codex` or `--harness claude`.
+The saved harness choice applies whenever `--harness` is omitted. Override it
+for one connection with `--harness codex` or `--harness claude`.
 
 Development builds:
 
@@ -188,7 +192,7 @@ Client state defaults to `$HOME/.losh` and can be moved with `LOSH_HOME`:
 
 ```text
 ~/.losh/
-├── config.json                  default local coding harness
+├── config.json                  default harness and permission-prompt policy
 ├── sessions/<id>/
 │   ├── session.json
 │   └── calls/                   pending shell payloads

@@ -13,7 +13,8 @@ import (
 )
 
 type config struct {
-	DefaultHarness string `json:"default_harness"`
+	DefaultHarness             string `json:"default_harness"`
+	DangerouslySkipPermissions bool   `json:"dangerously_skip_permissions"`
 }
 
 func configPath() string {
@@ -38,15 +39,42 @@ func configuredHarness() (string, error) {
 	return cfg.DefaultHarness, nil
 }
 
-func saveConfiguredHarness(harness string) error {
+func configuredSkipPermissions() (bool, error) {
+	data, err := os.ReadFile(configPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	var cfg config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return false, fmt.Errorf("decode %s: %w", configPath(), err)
+	}
+	return cfg.DangerouslySkipPermissions, nil
+}
+
+func saveConfiguration(harness string, dangerouslySkipPermissions bool) error {
 	if harness != harnessCodex && harness != harnessClaude {
 		return fmt.Errorf("unsupported harness %q", harness)
 	}
-	data, err := json.MarshalIndent(config{DefaultHarness: harness}, "", "  ")
+	cfg := config{
+		DefaultHarness:             harness,
+		DangerouslySkipPermissions: dangerouslySkipPermissions,
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicWrite(configPath(), append(data, '\n'), 0600)
+}
+
+func saveConfiguredHarness(harness string) error {
+	dangerouslySkipPermissions, err := configuredSkipPermissions()
+	if err != nil {
+		return err
+	}
+	return saveConfiguration(harness, dangerouslySkipPermissions)
 }
 
 func runSetup(in io.Reader, out io.Writer) error {
@@ -96,15 +124,62 @@ func runSetup(in io.Reader, out io.Writer) error {
 			fmt.Fprintln(out, "Please enter 1 for Codex or 2 for Claude Code.")
 			continue
 		}
-		if err := saveConfiguredHarness(selected); err != nil {
+		dangerouslySkipPermissions, err := promptSkipPermissions(scanner, out)
+		if err != nil {
+			return err
+		}
+		if err := saveConfiguration(selected, dangerouslySkipPermissions); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "\nSaved. %s is now the default.\n", harnessDisplayName(selected))
+		if dangerouslySkipPermissions {
+			fmt.Fprintln(out, "Native permission prompts will be skipped by default.")
+		} else {
+			fmt.Fprintln(out, "Native permission prompts remain enabled.")
+		}
 		if _, err := exec.LookPath(selected); err != nil {
 			fmt.Fprintf(out, "Note: %s is not currently on PATH; install and authenticate it before connecting.\n", harnessDisplayName(selected))
 		}
 		fmt.Fprintln(out, "Connect with: losh user@host")
 		return nil
+	}
+}
+
+func promptSkipPermissions(scanner *bufio.Scanner, out io.Writer) (bool, error) {
+	current, err := configuredSkipPermissions()
+	if err != nil {
+		current = false
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Permission prompts:")
+	fmt.Fprintln(out, "  Codex:       --yolo")
+	fmt.Fprintln(out, "  Claude Code: --dangerously-skip-permissions")
+	fmt.Fprintln(out, "Enabling this lets the agent act without its native permission prompts.")
+	fmt.Fprintln(out, "Remote routing still applies, but commands may run without another approval.")
+	defaultChoice := "n"
+	if current {
+		defaultChoice = "y"
+	}
+	for {
+		fmt.Fprintf(out, "\nSkip native permission prompts by default? [y/n, current: %s]: ", defaultChoice)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return false, err
+			}
+			return false, errors.New("setup canceled; no preference was saved")
+		}
+		answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+		if answer == "" {
+			answer = defaultChoice
+		}
+		switch answer {
+		case "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		default:
+			fmt.Fprintln(out, "Please enter y or n.")
+		}
 	}
 }
 

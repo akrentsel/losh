@@ -40,16 +40,20 @@ func isNonInteractive(harness string, args []string) bool {
 	return false
 }
 
-func harnessLaunchArgs(harness string, resume bool, resumeSession string, harnessArgs []string, s session) ([]string, error) {
+func harnessLaunchArgs(harness string, resume bool, resumeSession string, dangerouslySkipPermissions bool, harnessArgs []string, s session) ([]string, error) {
 	if harness == harnessCodex {
-		return codexLaunchArgs(resume, resumeSession, harnessArgs)
+		return codexLaunchArgs(resume, resumeSession, dangerouslySkipPermissions, harnessArgs)
 	}
 	for _, arg := range harnessArgs {
 		if arg == "--settings" || strings.HasPrefix(arg, "--settings=") {
 			return nil, errors.New("Claude --settings cannot be overridden because losh uses it to enforce remote tool routing")
 		}
 	}
-	args := append([]string{"--settings", filepath.Join(s.Workspace, ".claude", "settings.json")}, harnessArgs...)
+	args := []string{"--settings", filepath.Join(s.Workspace, ".claude", "settings.json")}
+	if dangerouslySkipPermissions {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	args = append(args, harnessArgs...)
 	if resume {
 		args = append(args, "--resume")
 		if resumeSession != "" {

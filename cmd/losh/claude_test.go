@@ -34,7 +34,7 @@ func TestParseClaudeHarness(t *testing.T) {
 
 func TestClaudeLaunchArgs(t *testing.T) {
 	s := session{Workspace: "/tmp/losh workspace"}
-	got, err := harnessLaunchArgs(harnessClaude, true, "session-name", []string{"--model", "sonnet"}, s)
+	got, err := harnessLaunchArgs(harnessClaude, true, "session-name", false, []string{"--model", "sonnet"}, s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,14 @@ func TestClaudeLaunchArgs(t *testing.T) {
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("Claude args = %#v, want %#v", got, want)
 	}
-	if _, err := harnessLaunchArgs(harnessClaude, false, "", []string{"--settings", "unsafe.json"}, s); err == nil {
+	dangerous, err := harnessLaunchArgs(harnessClaude, false, "", true, nil, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(dangerous, " "), "--dangerously-skip-permissions") {
+		t.Fatalf("Claude dangerous args = %#v", dangerous)
+	}
+	if _, err := harnessLaunchArgs(harnessClaude, false, "", false, []string{"--settings", "unsafe.json"}, s); err == nil {
 		t.Fatal("expected Claude settings override to fail")
 	}
 }
