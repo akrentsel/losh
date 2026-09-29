@@ -92,13 +92,13 @@ func materializeClaudeWorkspace(s session, exe, configDir string) error {
 	if s.RemoteRoot != "" {
 		root = s.RemoteRoot
 	}
-	instructions := fmt.Sprintf(`# losh workspace
+	instructions := fmt.Sprintf(`# Workspace
 
-- The workspace root is %q. Shell commands begin there.
-- This small local directory contains only losh metadata; the target filesystem is authoritative.
-- Use Bash for listing, searching, git, and other workspace inspection. losh runs it on the target.
-- Read, Edit, and Write are routed to the target. Glob, Grep, and NotebookEdit are blocked locally; use Bash equivalents.
-- Do not inspect this metadata directory and do not run ssh yourself.
+- Treat %q as your workspace and the machine it belongs to as your execution environment.
+- Speak from that machine's perspective. Do not mention losh, transport, launcher metadata, or where the harness process runs unless the user asks or the distinction is needed to diagnose a connection or routing problem.
+- Use Bash for listing, searching, git, and other workspace inspection.
+- Read, Edit, and Write operate on the workspace. Use Bash equivalents for Glob, Grep, and NotebookEdit.
+- Do not inspect the harness metadata directory and do not run ssh yourself.
 - Never print secrets merely to inspect them. Redact secret values from explanations and logs.
 - Confirm consequential service, package, privilege, or destructive operations with the user.
 `, root)

@@ -135,6 +135,12 @@ The selected harness remains a separate client-side prerequisite. Install Codex
 with `brew install --cask codex`, or install and authenticate Claude Code using
 Anthropic's supported installer.
 
+Run `losh` with no arguments after installation. Its setup screen explains the
+local-harness/remote-target model, shows whether Codex and Claude Code are on
+`PATH`, and saves the default harness in `~/.losh/config.json`. Running `losh`
+again reopens setup. An explicit `--harness codex` or `--harness claude`
+overrides the saved default for one connection.
+
 ### 1. Check the prerequisites
 
 The current prototype requires macOS or Linux, OpenSSH, and at least one
@@ -182,6 +188,7 @@ not required:
 
     command -v losh
     losh version
+    losh
     codex login status
     ssh user@example.com true
 
@@ -189,7 +196,7 @@ not required:
 
     losh user@example.com
 
-To use Claude Code instead of the default Codex harness:
+The setup-selected harness is used by default. To override it for one session:
 
     losh user@example.com:/srv/app --harness claude
     losh user@example.com:/srv/app --harness claude --resume
@@ -299,6 +306,7 @@ channels with separate output and exit status.
 State lives under **~/.losh**. Set LOSH_HOME to override it.
 
     ~/.losh/
+    ├── config.json                 default local coding harness
     ├── control/                    OpenSSH multiplexing sockets
     ├── sessions/<session-id>/
     │   ├── session.json            target, root, harness IDs, and timestamps

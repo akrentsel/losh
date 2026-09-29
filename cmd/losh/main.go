@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "0.3.0"
+const version = "0.3.1"
 
 const (
 	harnessCodex  = "codex"
@@ -49,6 +49,7 @@ type options struct {
 	skipProbe     bool
 	noInstall     bool
 	harness       string
+	harnessSet    bool
 }
 
 func main() {
@@ -63,6 +64,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) == 0 {
+		return runSetup(os.Stdin, os.Stdout)
+	}
 	if len(args) > 0 {
 		switch args[0] {
 		case "__server", "__server-worker":
@@ -90,6 +94,11 @@ func run(args []string) error {
 			return runCommandFile(args[1], args[2])
 		case "sessions":
 			return listSessions(os.Stdout)
+		case "setup":
+			if len(args) != 1 {
+				return errors.New("setup does not accept arguments")
+			}
+			return runSetup(os.Stdin, os.Stdout)
 		case "version", "--version", "-v":
 			fmt.Fprintln(os.Stdout, version)
 			return nil
@@ -103,6 +112,12 @@ func run(args []string) error {
 	if err != nil {
 		usage(os.Stderr)
 		return err
+	}
+	if !opts.harnessSet {
+		opts.harness, err = configuredHarness()
+		if err != nil {
+			return fmt.Errorf("load configuration: %w (run 'losh setup' to repair it)", err)
+		}
 	}
 	return start(opts, harnessArgs)
 }
@@ -131,6 +146,7 @@ func parseArgs(args []string) (options, []string, error) {
 			}
 			i++
 			out.harness = args[i]
+			out.harnessSet = true
 		case "--root":
 			if i+1 >= len(args) {
 				return out, nil, errors.New("--root requires a path")
@@ -649,18 +665,21 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 
 func usage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
+  losh
   losh [user@]host[:/remote/root] [--harness codex|claude] [--resume [CHAT]] [-- HARNESS_OPTIONS...]
+  losh setup
   losh sessions
   losh version
 
 Options:
   -r, --resume [CHAT]  Open the harness picker, or resume CHAT by name or ID
-      --harness NAME   Run codex (default) or claude
+      --harness NAME   Override the configured harness with codex or claude
       --root PATH      Set the remote working root (useful for ambiguous targets)
       --skip-probe     Skip the initial SSH connectivity and shell probe
       --no-install     Fail instead of installing a missing/incompatible losh-server
 
 Examples:
+  losh                          # choose the default coding agent
   losh akrentsel@fuzz.foo.com
   losh prod:/srv/api --resume
   losh prod:/srv/api --resume fix-login

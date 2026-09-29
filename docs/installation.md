@@ -114,6 +114,23 @@ To install prebuilt client/server artifacts:
 If only a client binary is supplied, same-OS/same-architecture targets can use
 that binary as the helper. Cross-platform targets require the matching bundle.
 
+## Choose the default coding agent
+
+Run losh without a target after installation:
+
+```sh
+losh
+```
+
+The setup screen explains which state stays local and which operations run on
+the SSH target. It detects whether Codex and Claude Code are on `PATH` and saves
+the selection in `$LOSH_HOME/config.json` (normally `~/.losh/config.json`). Run
+`losh` or `losh setup` again to change it. The default remains Codex when no
+configuration exists.
+
+The saved choice applies whenever `--harness` is omitted. Override it for one
+connection with `--harness codex` or `--harness claude`.
+
 Development builds:
 
 ```sh
@@ -171,6 +188,7 @@ Client state defaults to `$HOME/.losh` and can be moved with `LOSH_HOME`:
 
 ```text
 ~/.losh/
+├── config.json                  default local coding harness
 ├── control/                     OpenSSH multiplexing sockets
 ├── sessions/<id>/
 │   ├── session.json
@@ -201,7 +219,10 @@ interactive PTYs are still future work.
 ## Start, choose a root, and resume
 
 ```sh
-# Remote user's home with the default Codex harness
+# Open setup and choose the default harness
+losh
+
+# Remote user's home with the configured default harness
 losh user@target
 
 # Explicit remote workspace

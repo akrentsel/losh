@@ -13,7 +13,7 @@ func TestParseClaudeHarness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.harness != harnessClaude || opts.target != "prod" || opts.root != "/srv/api" {
+	if opts.harness != harnessClaude || !opts.harnessSet || opts.target != "prod" || opts.root != "/srv/api" {
 		t.Fatalf("unexpected options: %#v", opts)
 	}
 	if strings.Join(args, " ") != "--model sonnet" {
@@ -102,7 +102,7 @@ func TestMaterializeClaudeWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(instructions), "/srv/app") || !strings.Contains(string(instructions), "target filesystem is authoritative") {
+	if !strings.Contains(string(instructions), "/srv/app") || !strings.Contains(string(instructions), "Speak from that machine's perspective") {
 		t.Fatalf("unexpected CLAUDE.md: %s", instructions)
 	}
 }
