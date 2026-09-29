@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 type session struct {
 	ID         string    `json:"id"`
@@ -148,7 +148,7 @@ func start(target, remoteRoot string, resume, skipProbe bool, codexArgs []string
 		}
 	}
 
-	args := make([]string, 0, len(codexArgs)+2)
+	args := codexBaseArgs()
 	if resume {
 		if len(codexArgs) > 0 && codexArgs[0] == "exec" {
 			// codex exec keeps options before the resume subcommand and
@@ -173,6 +173,9 @@ func start(target, remoteRoot string, resume, skipProbe bool, codexArgs []string
 	cmd.Dir = s.Workspace
 	cmd.Env = append(os.Environ(), "LOSH_SESSION="+s.ID, "LOSH_TARGET="+s.Target)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if len(codexArgs) == 0 || codexArgs[0] != "exec" {
+		defer fmt.Fprintf(os.Stderr, "\nlosh: Codex's `codex resume` hint refers to the underlying harness.\nlosh: resume this remote session with:\n  %s\n", resumeHint(s))
+	}
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -181,6 +184,19 @@ func start(target, remoteRoot string, resume, skipProbe bool, codexArgs []string
 		return err
 	}
 	return nil
+}
+
+func codexBaseArgs() []string {
+	return []string{"--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"}
+}
+
+func resumeHint(s session) string {
+	parts := []string{"losh", shellQuote(s.Target)}
+	if s.RemoteRoot != "" {
+		parts = append(parts, "--root", shellQuote(s.RemoteRoot))
+	}
+	parts = append(parts, "--resume")
+	return strings.Join(parts, " ")
 }
 
 func probe(s session) error {

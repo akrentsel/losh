@@ -172,6 +172,12 @@ loshy2-to-loshy setup, troubleshooting, and uninstall instructions, see
 
 ## Design
 
+For the proposed remote filesystem/process server, native-tool integration,
+and disconnect recovery guarantees, see the
+[remote interfaces design proposal](docs/remote-interfaces.md). It selects
+structured remote operations as the preferred direction; the sections below
+describe the current prototype and earlier design context.
+
 ### Keep the agent local
 
 losh starts Codex locally in a stable, target-specific workspace. That workspace

@@ -54,3 +54,28 @@ func TestRemotePrelude(t *testing.T) {
 		t.Fatalf("unexpected rooted prelude: %q", got)
 	}
 }
+
+func TestCodexBaseArgsEnableNetwork(t *testing.T) {
+	got := strings.Join(codexBaseArgs(), " ")
+	want := "--sandbox workspace-write -c sandbox_workspace_write.network_access=true"
+	if got != want {
+		t.Fatalf("codexBaseArgs() = %q, want %q", got, want)
+	}
+}
+
+func TestResumeHint(t *testing.T) {
+	s := session{Target: "deploy@example.com", RemoteRoot: "/srv/it's here"}
+	got := resumeHint(s)
+	want := "losh 'deploy@example.com' --root '/srv/it'\"'\"'s here' --resume"
+	if got != want {
+		t.Fatalf("resumeHint() = %q, want %q", got, want)
+	}
+}
+
+func TestResumeHintHome(t *testing.T) {
+	got := resumeHint(session{Target: "example.com"})
+	want := "losh 'example.com' --resume"
+	if got != want {
+		t.Fatalf("resumeHint() = %q, want %q", got, want)
+	}
+}
