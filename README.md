@@ -2,6 +2,8 @@
 
 **Local agent, remote machine.**
 
+[Website](https://losh-website.exe.xyz/) · [Installation](#clean-installation)
+
 losh is a natural-language interface to any computer you can already reach
 with SSH. It runs Codex or Claude Code locally but executes the
 agent's actions on a selected remote host.
