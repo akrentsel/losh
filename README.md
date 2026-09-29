@@ -48,18 +48,18 @@ The practical benefits are:
 
 losh reverses that arrangement:
 
-    ┌──────────────────────── local ─────────────────────────┐
-    │ losh + Codex or Claude Code                            │
-    │ provider authentication · sessions · approvals         │
+    ┌──────────────────────── local ────────────────────────┐
+    │ losh + Codex or Claude Code                           │
+    │ provider authentication · sessions · approvals        │
     │                                                       │
-    │          exec · read · write · patch · processes       │
+    │          exec · read · write · patch · processes      │
     └──────────────────────────┬────────────────────────────┘
                                │ existing SSH connection
     ┌──────────────────────────▼────────────────────────────┐
-    │ remote machine                                      │
-    │ shell · files · services · source · logs             │
-    │ no model, API key, inbound port, or permanent agent  │
-    └──────────────────────────────────────────────────────┘
+    │ remote machine                                        │
+    │ shell · files · services · source · logs              │
+    │ no model, API key, inbound port, or permanent agent   │
+    └───────────────────────────────────────────────────────┘
 
 The compatibility goal is:
 
@@ -122,9 +122,7 @@ Current limitations:
   `nodeRepl.homeDir`, and `nodeRepl.write`; Codex-injected tool proxies and the
   rest of the native REPL host API are not yet reproduced remotely. losh checks
   for `node` lazily when the tool is invoked and fails closed with a clear error
-  when it is unavailable. The remote execution path has been tested directly,
-  but a natural Codex tool call still needs verification on a client where
-  `node_repl.js` is exposed;
+  when it is unavailable.
 - Codex's user-invoked shell mode bypasses tool hooks and currently runs in the
   local metadata workspace. Do not use it for remote commands. The tested
   `$SHELL` wrapper was not invoked; the feasibility result is documented in
