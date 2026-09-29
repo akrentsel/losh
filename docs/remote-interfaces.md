@@ -135,8 +135,9 @@ versions drain or refuse startup rather than abandoning operation history.
 
 ### Established behavior versus proposed integration
 
-The current prototype rewrites Codex Bash commands through `PreToolUse` and
-blocks native `apply_patch`. It has no filesystem RPC or durable job protocol.
+The current implementation rewrites Codex Bash commands through `PreToolUse`,
+routes commands and patches through durable remote operations, and blocks the
+duplicate native `apply_patch`. Its harness coverage is not yet complete.
 
 Codex documents input rewriting for Bash and `apply_patch`, but that does not
 establish replacement of a native executor with an arbitrary remote result.
@@ -148,6 +149,148 @@ Claude Code documents pre-tool input replacement and permission decisions.
 That establishes a possible interception point, not a proven general remote
 execution backend for native file tools.
 [Claude Code hooks](https://code.claude.com/docs/en/hooks)
+
+### User-invoked shell mode and the shell-wrapper proposal
+
+Codex's user-invoked shell mode is a separate execution path from an
+agent-issued `Bash` tool call. In the current integration, commands entered
+directly by the user run locally in the losh metadata workspace. For example,
+`pwd` reports `$HOME/.losh/workspaces/<session-id>` and `ls` can expose the
+generated `AGENTS.md`. The `PreToolUse` hook never sees this command, so the
+existing Bash rewrite cannot make it remote.
+
+This is unsupported behavior, not a harmless presentation defect. A command
+such as `uname`, `git status`, or `rm` would act on the client while appearing
+inside a remote-oriented session. losh must not describe user shell mode as
+remote until it has a verified interception point.
+
+The bounded experiment considered a per-session shell wrapper:
+
+```text
+Codex user shell mode
+        |
+        | verified one-shot shell invocation
+        v
+losh-shell wrapper (local, session-bound)
+        |
+        | durable process.start(operation ID, target, root, command)
+        v
+losh-server -> selected remote shell -> remote workspace
+```
+
+At session launch, losh would set `SHELL` to a losh-owned executable and pass
+the session identity separately through a private environment variable or
+per-session wrapper path. The wrapper must accept only shell invocation shapes
+that have been observed and tested, such as `-c <command>` or `-lc <command>`.
+It must pass the command as protocol data, never interpolate it into another
+local shell command. The remote server selects and invokes the configured
+remote shell.
+
+The feasibility probe failed on the tested Codex stack: Codex CLI 0.158.0 with
+its active 0.154.0 service on Linux. Codex was launched with `SHELL` set to a
+probe executable. A user-entered `!printf LOSH_PROBE` command executed locally
+and returned `LOSH_PROBE`, while the probe executable was never invoked. The
+lightweight wrapper approach is therefore deferred, and no implementation is
+planned unless Codex exposes a supported user-shell hook or execution provider.
+
+Other Codex builds may use a different path, but losh cannot infer support from
+`SHELL`. PATH-shadowing `bash`, `sh`, or `zsh` is not an acceptable fallback:
+it is process-wide, can cause recursion, and could unexpectedly redirect
+unrelated local programs. Wrapping the whole Codex TUI PTY is also insufficient
+because terminal keystrokes do not provide a reliable command boundary.
+
+#### Capability detection and fail-closed behavior
+
+Support should be enabled only for a harness/version combination that passes a
+runtime conformance probe. The probe records the wrapper's argument vector,
+environment shape, working directory, exit-status handling, and whether stdout
+and stderr are preserved. The compatibility record is keyed by Codex version
+and platform; an unknown or changed version is unsupported until retested.
+
+The wrapper should perform a session handshake before executing any command:
+
+1. Load a session record by opaque ID, not by user-controlled target text.
+2. Verify the record is owned by the current local user and names the active
+   target and remote root.
+3. Contact the matching losh-server and verify its installation/state identity.
+4. Allocate a fresh durable operation ID for this user submission.
+5. Submit once, poll/reconnect using the same ID, and return the retained result.
+
+If any check fails, the wrapper exits nonzero and prints that remote shell mode
+is unavailable. It must never run the command locally. If Codex bypasses the
+wrapper entirely, losh cannot reliably fail that individual command; therefore
+the feature remains disabled unless the version probe establishes that Codex
+uses the wrapper. The local metadata workspace should remain read-only, but
+read-only metadata is defense in depth rather than proof of interception.
+
+#### Command, environment, and output semantics
+
+The first implementation can support only one-shot, noninteractive commands:
+
+- Each submission starts in the configured remote root.
+- `cd`, aliases, functions, and exported variables last only for that command.
+- The wrapper returns the remote exit status and keeps stdout and stderr
+  distinct where Codex's shell-mode interface permits it.
+- A disconnect retries status/result retrieval with the same operation ID; it
+  never starts a second command merely because the acknowledgement was lost.
+- Entering the same text twice intentionally creates two different operation
+  IDs and therefore two executions.
+- Local `PATH`, credentials, tokens, and provider environment variables are not
+  forwarded. A small allowlist such as locale and terminal metadata can be
+  negotiated explicitly.
+
+The remote shell is part of the session contract. Initially it should be an
+explicit executable, defaulting to `/bin/sh`, rather than trusting arbitrary
+client environment. Login-shell behavior must be opt-in because startup files
+can mutate state, emit output, and change command interpretation. The command,
+shell choice, target identity, root, and environment policy are bound into the
+operation digest.
+
+The current buffered process RPC is enough for a proof of concept, but a good
+interactive experience requires the future streaming process interface.
+Ctrl-C must become an acknowledged remote cancellation request; killing only
+the local wrapper can leave the detached remote command running. PTYs, REPLs,
+editors, password prompts, and persistent shell state are out of scope until
+`process.attach`, input sequencing, resizing, cancellation, and output offsets
+exist.
+
+`sudo` follows the same boundary as agent-issued commands. Noninteractive
+`sudo -n` can work when remote policy permits it. Password delivery, `sudo -S`,
+credential forwarding, and hidden privilege escalation are forbidden. A host
+that requires a password or TTY returns an explicit failure.
+
+#### Rejected shortcuts
+
+- A remote filesystem mount alone is not shell routing. It can make `ls` look
+  remote while `uname`, services, processes, networking, and absolute paths
+  still refer to the client, which is more misleading than an explicit error.
+- Mirroring remote files into the metadata workspace has the same execution
+  mismatch and reintroduces synchronization ordering.
+- Prompt instructions cannot redirect a command typed directly by the user.
+- Showing a remote-looking prompt or rewriting `pwd` output is cosmetic and
+  must never substitute for remote execution.
+
+#### Acceptance tests
+
+Before enabling the wrapper by default, test at least:
+
+- supported Codex versions on macOS and Linux, including resume;
+- exact wrapper argv for `-c`, `-lc`, quoting, newlines, pipes, redirects,
+  substitutions, and empty commands;
+- remote `pwd`, `uname`, filesystem changes, exit codes, stdout, and stderr;
+- spaces and non-ASCII characters in roots and command payloads;
+- local-secret exclusion and remote environment selection;
+- disconnect before acceptance, after acceptance, during execution, and while
+  returning output, proving deduplication in each case;
+- two identical user submissions producing two distinct executions;
+- Ctrl-C and client termination without false cancellation claims;
+- `sudo -n` success and password/TTY-required failure; and
+- an unknown Codex version refusing support rather than silently executing
+  locally.
+
+If Codex does not honor a controllable shell executable, the next correct step
+is an upstream Codex execution-provider or user-shell hook. A remote mount is
+not the fallback for this feature.
 
 The table below describes desired mappings, not verified hook capabilities:
 

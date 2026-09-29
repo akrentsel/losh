@@ -46,6 +46,83 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestParseResumeForms(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantSession string
+	}{
+		{name: "picker", args: []string{"prod", "--resume"}},
+		{name: "named", args: []string{"prod", "--resume", "fix-login"}, wantSession: "fix-login"},
+		{name: "short named", args: []string{"prod", "-r", "01abc"}, wantSession: "01abc"},
+		{name: "equals before target", args: []string{"--resume=fix-login", "prod"}, wantSession: "fix-login"},
+		{name: "picker before target", args: []string{"--resume", "prod"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts, _, err := parseArgs(tt.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !opts.resume || opts.resumeSession != tt.wantSession || opts.target != "prod" {
+				t.Fatalf("unexpected options: %#v", opts)
+			}
+		})
+	}
+
+	if _, _, err := parseArgs([]string{"prod", "--resume="}); err == nil {
+		t.Fatal("expected empty --resume= value to fail")
+	}
+}
+
+func TestCodexLaunchArgs(t *testing.T) {
+	tests := []struct {
+		name          string
+		resume        bool
+		resumeSession string
+		codexArgs     []string
+		wantSuffix    string
+	}{
+		{name: "new conversation", codexArgs: []string{"--model", "example"}, wantSuffix: "--model example"},
+		{name: "resume picker", resume: true, wantSuffix: "resume"},
+		{name: "resume named", resume: true, resumeSession: "fix-login", wantSuffix: "resume fix-login"},
+		{
+			name:          "resume named with global option",
+			resume:        true,
+			resumeSession: "fix-login",
+			codexArgs:     []string{"--model", "example"},
+			wantSuffix:    "--model example resume fix-login",
+		},
+		{
+			name:          "exec resume",
+			resume:        true,
+			resumeSession: "01abc",
+			codexArgs:     []string{"exec", "--json", "continue working"},
+			wantSuffix:    "exec --json resume 01abc continue working",
+		},
+	}
+	base := strings.Join(codexBaseArgs(), " ")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := codexLaunchArgs(tt.resume, tt.resumeSession, tt.codexArgs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.TrimSpace(base + " " + tt.wantSuffix)
+			if strings.Join(got, " ") != want {
+				t.Fatalf("codexLaunchArgs() = %q, want %q", strings.Join(got, " "), want)
+			}
+			if strings.Contains(strings.Join(got, " "), "--last") {
+				t.Fatal("resume unexpectedly used --last")
+			}
+		})
+	}
+
+	if _, err := codexLaunchArgs(true, "", []string{"exec", "prompt"}); err == nil {
+		t.Fatal("expected picker-style exec resume to fail")
+	}
+}
+
 func TestRemotePrelude(t *testing.T) {
 	if got := remotePrelude(""); got != "cd -- \"$HOME\" || exit $?\n" {
 		t.Fatalf("unexpected home prelude: %q", got)

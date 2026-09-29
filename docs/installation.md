@@ -200,8 +200,11 @@ losh user@target
 losh user@target:/srv/app
 losh user@target --root /srv/app
 
-# Same target/root conversation
+# Pick a conversation for this target/root
 losh user@target:/srv/app --resume
+
+# Or resume one directly by name or ID
+losh user@target:/srv/app --resume fix-login
 
 # List local session records
 losh sessions
@@ -237,6 +240,19 @@ not an indication that the confirmed remote edit failed.
 
 The local metadata workspace is read-only between generated updates, reducing
 the effect of a hook failure that might otherwise let the local patch continue.
+
+## User-invoked Codex shell mode
+
+Do not use Codex's direct user shell mode for remote work in the current
+release. It bypasses the `Bash` tool hook and runs locally in losh's metadata
+workspace. Seeing a path such as `$HOME/.losh/workspaces/<session-id>` confirms
+that the command did not run on the target.
+
+The tested Codex build ignored a session-specific `SHELL` wrapper, so losh does
+not implement this approach. Shell mode will remain unsupported unless Codex
+adds a supported user-shell interception point. losh will not shadow shell
+binaries or silently execute these commands locally. See the detailed
+[shell-wrapper proposal](remote-interfaces.md#user-invoked-shell-mode-and-the-shell-wrapper-proposal).
 
 ## Noninteractive smoke test
 

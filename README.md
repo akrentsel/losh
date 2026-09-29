@@ -56,8 +56,11 @@ The compatibility goal is:
     losh prod:/srv/api
     losh prod --root /srv/api
 
-    # Resume the latest Codex conversation for this target and root
+    # Pick a Codex conversation for this target and root
     losh prod:/srv/api --resume
+
+    # Or resume one directly by name or ID
+    losh prod:/srv/api --resume fix-login
 
     # Forward options to Codex
     losh prod:/srv/api -- --model gpt-5.6-sol
@@ -81,6 +84,10 @@ Implemented:
 
 Current limitations:
 
+- Codex's user-invoked shell mode bypasses tool hooks and currently runs in the
+  local metadata workspace. Do not use it for remote commands. The tested
+  `$SHELL` wrapper was not invoked; the feasibility result is documented in
+  [Remote interfaces](docs/remote-interfaces.md#user-invoked-shell-mode-and-the-shell-wrapper-proposal).
 - Codex's hook API cannot replace native `apply_patch` execution with a custom
   executor result. losh applies the patch remotely, blocks its local duplicate,
   and returns the confirmed result in the hook message; Codex continues
@@ -274,9 +281,10 @@ therefore distinct:
     prod:/srv/api
     deploy@prod:/srv/api
 
-Codex remains authoritative for conversation state. With --resume, losh runs
-**codex resume --last** from the stable target workspace instead of parsing
-Codex's private transcript format.
+Codex remains authoritative for conversation state. With bare **--resume**,
+losh runs **codex resume** from the stable target workspace, opening Codex's
+native picker for that target and root. Pass a conversation name or ID after
+**--resume** to select it directly. losh does not parse Codex's private transcript format.
 
 ### Bootstrap losh-server automatically
 
@@ -294,7 +302,8 @@ back to weaker direct execution when reliable server mode is expected.
 
 ### Conversation and operation persistence
 
-Codex conversation state remains local and `--resume` restores it. Accepted
+Codex conversation state remains local; **--resume** opens its picker, while
+**--resume NAME_OR_ID** restores a conversation directly. Accepted
 commands run in detached server workers with remote status, output, and exit
 records, so losing the SSH transport does not cause losh to submit a second
 command. Streaming attachment and interactive PTYs remain future work. A target

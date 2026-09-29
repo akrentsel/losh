@@ -33,11 +33,12 @@ type hookInput struct {
 }
 
 type options struct {
-	target    string
-	root      string
-	resume    bool
-	skipProbe bool
-	noInstall bool
+	target        string
+	root          string
+	resume        bool
+	resumeSession string
+	skipProbe     bool
+	noInstall     bool
 }
 
 func main() {
@@ -82,7 +83,7 @@ func run(args []string) error {
 		usage(os.Stderr)
 		return err
 	}
-	return start(opts.target, opts.root, opts.resume, opts.skipProbe, opts.noInstall, codexArgs)
+	return start(opts.target, opts.root, opts.resume, opts.resumeSession, opts.skipProbe, opts.noInstall, codexArgs)
 }
 
 func parseArgs(args []string) (options, []string, error) {
@@ -95,6 +96,10 @@ func parseArgs(args []string) (options, []string, error) {
 			i = len(args)
 		case "--resume", "-r":
 			out.resume = true
+			if out.target != "" && i+1 < len(args) && args[i+1] != "--" && !strings.HasPrefix(args[i+1], "-") {
+				i++
+				out.resumeSession = args[i]
+			}
 		case "--skip-probe":
 			out.skipProbe = true
 		case "--no-install":
@@ -106,6 +111,14 @@ func parseArgs(args []string) (options, []string, error) {
 			i++
 			out.root = args[i]
 		default:
+			if strings.HasPrefix(args[i], "--resume=") {
+				out.resume = true
+				out.resumeSession = strings.TrimPrefix(args[i], "--resume=")
+				if out.resumeSession == "" {
+					return out, nil, errors.New("--resume= requires a session name or ID")
+				}
+				continue
+			}
 			if strings.HasPrefix(args[i], "-") {
 				return out, nil, fmt.Errorf("unknown option %q (put Codex options after --)", args[i])
 			}
@@ -131,7 +144,7 @@ func splitTarget(value, explicitRoot string) (string, string) {
 	return value, ""
 }
 
-func start(target, remoteRoot string, resume, skipProbe, noInstall bool, codexArgs []string) error {
+func start(target, remoteRoot string, resume bool, resumeSession string, skipProbe, noInstall bool, codexArgs []string) error {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		return errors.New("OpenSSH client not found in PATH")
 	}
@@ -156,26 +169,9 @@ func start(target, remoteRoot string, resume, skipProbe, noInstall bool, codexAr
 		return err
 	}
 
-	args := codexBaseArgs()
-	if resume {
-		if len(codexArgs) > 0 && codexArgs[0] == "exec" {
-			// codex exec keeps options before the resume subcommand and
-			// accepts the last positional argument as the resumed prompt.
-			args = append(args, "exec")
-			remaining := codexArgs[1:]
-			if len(remaining) > 0 {
-				args = append(args, remaining[:len(remaining)-1]...)
-				args = append(args, "resume", "--last", remaining[len(remaining)-1])
-			} else {
-				args = append(args, "resume", "--last")
-			}
-		} else {
-			// Global Codex options precede the interactive resume subcommand.
-			args = append(args, codexArgs...)
-			args = append(args, "resume", "--last")
-		}
-	} else {
-		args = append(args, codexArgs...)
+	args, err := codexLaunchArgs(resume, resumeSession, codexArgs)
+	if err != nil {
+		return err
 	}
 	cmd := exec.Command("codex", args...)
 	cmd.Dir = s.Workspace
@@ -196,6 +192,35 @@ func start(target, remoteRoot string, resume, skipProbe, noInstall bool, codexAr
 
 func codexBaseArgs() []string {
 	return []string{"--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"}
+}
+
+func codexLaunchArgs(resume bool, resumeSession string, codexArgs []string) ([]string, error) {
+	args := codexBaseArgs()
+	if !resume {
+		return append(args, codexArgs...), nil
+	}
+
+	if len(codexArgs) > 0 && codexArgs[0] == "exec" {
+		if resumeSession == "" {
+			return nil, errors.New("--resume with codex exec requires a session name or ID")
+		}
+		args = append(args, "exec")
+		remaining := codexArgs[1:]
+		if len(remaining) > 0 {
+			args = append(args, remaining[:len(remaining)-1]...)
+			args = append(args, "resume", resumeSession, remaining[len(remaining)-1])
+		} else {
+			args = append(args, "resume", resumeSession)
+		}
+		return args, nil
+	}
+
+	args = append(args, codexArgs...)
+	args = append(args, "resume")
+	if resumeSession != "" {
+		args = append(args, resumeSession)
+	}
+	return args, nil
 }
 
 func resumeHint(s session) string {
@@ -506,19 +531,20 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 
 func usage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
-  losh [user@]host[:/remote/root] [--resume] [-- CODEX_OPTIONS...]
+  losh [user@]host[:/remote/root] [--resume [CHAT]] [-- CODEX_OPTIONS...]
   losh sessions
   losh version
 
 Options:
-  -r, --resume       Resume Codex's most recent conversation for this target/root
-      --root PATH    Set the remote working root (useful for ambiguous targets)
-      --skip-probe   Skip the initial SSH connectivity and shell probe
-      --no-install   Fail instead of installing a missing/incompatible losh-server
+  -r, --resume [CHAT]  Open Codex's picker, or resume CHAT by name or ID
+      --root PATH      Set the remote working root (useful for ambiguous targets)
+      --skip-probe     Skip the initial SSH connectivity and shell probe
+      --no-install     Fail instead of installing a missing/incompatible losh-server
 
 Examples:
   losh akrentsel@fuzz.foo.com
   losh prod:/srv/api --resume
+  losh prod:/srv/api --resume fix-login
   losh prod --root /srv/api -- --model gpt-5.6-sol`)
 }
 
