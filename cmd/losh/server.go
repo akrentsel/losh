@@ -95,7 +95,7 @@ func serverStartOperation(request rpcRequest) rpcResponse {
 	if request.OperationID == "" || request.Digest == "" {
 		return rpcResponse{Error: "start requires operation_id and digest"}
 	}
-	if request.Kind != "exec" && request.Kind != "patch" {
+	if request.Kind != "exec" && request.Kind != "patch" && request.Kind != "fs-read" && request.Kind != "fs-write" && request.Kind != "fs-edit" {
 		return rpcResponse{Error: fmt.Sprintf("unsupported operation kind %q", request.Kind)}
 	}
 	if got := operationDigest(request.Kind, request.Root, request.Payload); got != request.Digest {
@@ -193,6 +193,8 @@ func runServerWorker(opDir string) error {
 		return runExecWorker(opDir, record)
 	case "patch":
 		return runPatchWorker(opDir, record)
+	case "fs-read", "fs-write", "fs-edit":
+		return runClaudeFileWorker(opDir, record)
 	default:
 		return finishOperation(opDir, operationStatus{State: "failed", Result: "unsupported operation kind", UpdatedAt: time.Now().UTC()})
 	}
@@ -263,6 +265,18 @@ func finishOperation(opDir string, status operationStatus) error {
 		return err
 	}
 	return syncDirectory(opDir)
+}
+
+func runClaudeFileWorker(opDir string, record operationRecord) error {
+	root, err := resolveOperationRoot(record.Root)
+	if err != nil {
+		return finishOperation(opDir, operationStatus{State: "failed", Result: err.Error(), UpdatedAt: time.Now().UTC()})
+	}
+	result, err := applyClaudeFileOperation(root, record.Kind, record.Payload, opDir)
+	if err != nil {
+		return finishOperation(opDir, operationStatus{State: "failed", Result: err.Error(), UpdatedAt: time.Now().UTC()})
+	}
+	return finishOperation(opDir, operationStatus{State: "committed", Result: result, UpdatedAt: time.Now().UTC()})
 }
 
 func serverOperationStatus(id string) rpcResponse {

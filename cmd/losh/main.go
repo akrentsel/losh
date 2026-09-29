@@ -15,16 +15,22 @@ import (
 	"time"
 )
 
-const version = "0.2.2"
+const version = "0.3.0"
+
+const (
+	harnessCodex  = "codex"
+	harnessClaude = "claude"
+)
 
 type session struct {
-	ID             string    `json:"id"`
-	Target         string    `json:"target"`
-	RemoteRoot     string    `json:"remote_root"`
-	Workspace      string    `json:"workspace"`
-	CodexSessionID string    `json:"codex_session_id,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	LastUsedAt     time.Time `json:"last_used_at"`
+	ID              string    `json:"id"`
+	Target          string    `json:"target"`
+	RemoteRoot      string    `json:"remote_root"`
+	Workspace       string    `json:"workspace"`
+	CodexSessionID  string    `json:"codex_session_id,omitempty"`
+	ClaudeSessionID string    `json:"claude_session_id,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	LastUsedAt      time.Time `json:"last_used_at"`
 }
 
 type hookInput struct {
@@ -42,6 +48,7 @@ type options struct {
 	resumeSession string
 	skipProbe     bool
 	noInstall     bool
+	harness       string
 }
 
 func main() {
@@ -61,10 +68,21 @@ func run(args []string) error {
 		case "__server", "__server-worker":
 			return runServer(args, os.Stdin, os.Stdout)
 		case "__hook":
-			if len(args) != 2 {
+			if len(args) != 2 && len(args) != 3 {
 				return errors.New("invalid hook invocation")
 			}
-			return runHook(args[1], os.Stdin, os.Stdout)
+			harness := harnessCodex
+			if len(args) == 3 {
+				harness = args[2]
+			}
+			if err := runHook(args[1], harness, os.Stdin, os.Stdout); err != nil {
+				if harness == harnessClaude {
+					fmt.Fprintln(os.Stderr, "losh hook:", err)
+					return exitCodeError{code: 2}
+				}
+				return err
+			}
+			return nil
 		case "__exec-file":
 			if len(args) != 3 {
 				return errors.New("invalid remote execution invocation")
@@ -81,21 +99,21 @@ func run(args []string) error {
 		}
 	}
 
-	opts, codexArgs, err := parseArgs(args)
+	opts, harnessArgs, err := parseArgs(args)
 	if err != nil {
 		usage(os.Stderr)
 		return err
 	}
-	return start(opts.target, opts.root, opts.resume, opts.resumeSession, opts.skipProbe, opts.noInstall, codexArgs)
+	return start(opts, harnessArgs)
 }
 
 func parseArgs(args []string) (options, []string, error) {
-	var out options
-	var codexArgs []string
+	out := options{harness: harnessCodex}
+	var harnessArgs []string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--":
-			codexArgs = append(codexArgs, args[i+1:]...)
+			harnessArgs = append(harnessArgs, args[i+1:]...)
 			i = len(args)
 		case "--resume", "-r":
 			out.resume = true
@@ -107,6 +125,12 @@ func parseArgs(args []string) (options, []string, error) {
 			out.skipProbe = true
 		case "--no-install":
 			out.noInstall = true
+		case "--harness":
+			if i+1 >= len(args) {
+				return out, nil, errors.New("--harness requires codex or claude")
+			}
+			i++
+			out.harness = args[i]
 		case "--root":
 			if i+1 >= len(args) {
 				return out, nil, errors.New("--root requires a path")
@@ -123,7 +147,7 @@ func parseArgs(args []string) (options, []string, error) {
 				continue
 			}
 			if strings.HasPrefix(args[i], "-") {
-				return out, nil, fmt.Errorf("unknown option %q (put Codex options after --)", args[i])
+				return out, nil, fmt.Errorf("unknown option %q (put harness options after --)", args[i])
 			}
 			if out.target != "" {
 				return out, nil, errors.New("only one SSH target may be specified")
@@ -134,7 +158,10 @@ func parseArgs(args []string) (options, []string, error) {
 	if out.target == "" {
 		return out, nil, errors.New("missing SSH target")
 	}
-	return out, codexArgs, nil
+	if out.harness != harnessCodex && out.harness != harnessClaude {
+		return out, nil, fmt.Errorf("unsupported harness %q (choose codex or claude)", out.harness)
+	}
+	return out, harnessArgs, nil
 }
 
 func splitTarget(value, explicitRoot string) (string, string) {
@@ -147,46 +174,46 @@ func splitTarget(value, explicitRoot string) (string, string) {
 	return value, ""
 }
 
-func start(target, remoteRoot string, resume bool, resumeSession string, skipProbe, noInstall bool, codexArgs []string) error {
+func start(opts options, harnessArgs []string) error {
 	if _, err := exec.LookPath("ssh"); err != nil {
 		return errors.New("OpenSSH client not found in PATH")
 	}
-	if _, err := exec.LookPath("codex"); err != nil {
-		return errors.New("Codex CLI not found in PATH; install and authenticate Codex first")
+	if _, err := exec.LookPath(opts.harness); err != nil {
+		return fmt.Errorf("%s CLI not found in PATH; install and authenticate %s first", harnessDisplayName(opts.harness), harnessDisplayName(opts.harness))
 	}
 
-	s, err := ensureSession(target, remoteRoot)
+	s, err := ensureSession(opts.target, opts.root)
 	if err != nil {
 		return err
 	}
-	if err := materializeWorkspace(s); err != nil {
+	if err := materializeWorkspace(s, opts.harness); err != nil {
 		return err
 	}
-	if !skipProbe {
-		fmt.Fprintf(os.Stderr, "Connecting to %s...\n", target)
+	if !opts.skipProbe {
+		fmt.Fprintf(os.Stderr, "Connecting to %s...\n", opts.target)
 		if err := probe(s); err != nil {
 			return fmt.Errorf("SSH probe failed: %w", err)
 		}
 	}
-	if err := ensureRemoteServer(s, !noInstall); err != nil {
+	if err := ensureRemoteServer(s, !opts.noInstall); err != nil {
 		return err
 	}
 
-	args, err := codexLaunchArgs(resume, resumeSession, codexArgs)
+	args, err := harnessLaunchArgs(opts.harness, opts.resume, opts.resumeSession, harnessArgs, s)
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command("codex", args...)
+	cmd := exec.Command(opts.harness, args...)
 	cmd.Dir = s.Workspace
-	cmd.Env = append(os.Environ(), "LOSH_SESSION="+s.ID, "LOSH_TARGET="+s.Target)
+	cmd.Env = append(os.Environ(), "LOSH_SESSION="+s.ID, "LOSH_TARGET="+s.Target, "LOSH_HARNESS="+opts.harness)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if len(codexArgs) == 0 || codexArgs[0] != "exec" {
+	if !isNonInteractive(opts.harness, harnessArgs) {
 		defer func() {
 			latest := s
 			if saved, err := loadSession(s.ID); err == nil {
 				latest = saved
 			}
-			fmt.Fprintf(os.Stderr, "\nlosh: resume this remote session with:\n  %s\n", resumeHint(latest))
+			fmt.Fprintf(os.Stderr, "\nlosh: resume this remote session with:\n  %s\n", resumeHint(latest, opts.harness))
 		}()
 	}
 	if err := cmd.Run(); err != nil {
@@ -232,14 +259,21 @@ func codexLaunchArgs(resume bool, resumeSession string, codexArgs []string) ([]s
 	return args, nil
 }
 
-func resumeHint(s session) string {
+func resumeHint(s session, harness string) string {
 	parts := []string{"losh", shellQuote(s.Target)}
 	if s.RemoteRoot != "" {
 		parts = append(parts, "--root", shellQuote(s.RemoteRoot))
 	}
+	if harness != harnessCodex {
+		parts = append(parts, "--harness", harness)
+	}
 	parts = append(parts, "--resume")
-	if s.CodexSessionID != "" {
-		parts = append(parts, shellQuote(s.CodexSessionID))
+	sessionID := s.CodexSessionID
+	if harness == harnessClaude {
+		sessionID = s.ClaudeSessionID
+	}
+	if sessionID != "" {
+		parts = append(parts, shellQuote(sessionID))
 	}
 	return strings.Join(parts, " ")
 }
@@ -258,7 +292,7 @@ func probe(s session) error {
 	return nil
 }
 
-func runHook(sessionID string, in io.Reader, out io.Writer) error {
+func runHook(sessionID, harness string, in io.Reader, out io.Writer) error {
 	var input hookInput
 	if err := json.NewDecoder(in).Decode(&input); err != nil {
 		return fmt.Errorf("decode hook input: %w", err)
@@ -269,8 +303,15 @@ func runHook(sessionID string, in io.Reader, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if s.CodexSessionID != input.SessionID {
+		changed := false
+		if harness == harnessClaude && s.ClaudeSessionID != input.SessionID {
+			s.ClaudeSessionID = input.SessionID
+			changed = true
+		} else if harness == harnessCodex && s.CodexSessionID != input.SessionID {
 			s.CodexSessionID = input.SessionID
+			changed = true
+		}
+		if changed {
 			if err := saveSession(s); err != nil {
 				return err
 			}
@@ -283,7 +324,7 @@ func runHook(sessionID string, in io.Reader, out io.Writer) error {
 		if !ok || command == "" {
 			return errors.New("Bash hook did not contain a command")
 		}
-		callID := safeName(input.ToolUseID)
+		callID := safeName(input.SessionID + "-" + input.ToolUseID)
 		if callID == "" {
 			callID = shortHash(command + time.Now().UTC().String())
 		}
@@ -307,7 +348,7 @@ func runHook(sessionID string, in io.Reader, out io.Writer) error {
 		if !ok || patchText == "" {
 			return errors.New("apply_patch hook did not contain a patch")
 		}
-		callID := safeName(input.ToolUseID)
+		callID := safeName(input.SessionID + "-" + input.ToolUseID)
 		if callID == "" {
 			callID = shortHash(patchText + time.Now().UTC().String())
 		}
@@ -327,6 +368,16 @@ func runHook(sessionID string, in io.Reader, out io.Writer) error {
 				"permissionDecisionReason": reason,
 			},
 		})
+	case "Write", "Edit", "Read":
+		if harness != harnessClaude {
+			return nil
+		}
+		return runClaudeFileHook(sessionID, input, out)
+	case "Glob", "Grep", "NotebookEdit":
+		if harness != harnessClaude {
+			return nil
+		}
+		return denyClaudeTool(out, "losh blocked this local workspace tool. Use Bash with a remote command instead; losh routes Bash to the target machine.")
 	default:
 		return nil
 	}
@@ -417,21 +468,28 @@ func saveCall(sessionID, callID, command string) error {
 	return atomicWrite(filepath.Join(dir, safeName(callID)+".txt"), []byte(command), 0600)
 }
 
-func materializeWorkspace(s session) error {
-	if err := os.MkdirAll(filepath.Join(s.Workspace, ".codex"), 0700); err != nil {
+func materializeWorkspace(s session, harness string) error {
+	if err := os.MkdirAll(s.Workspace, 0700); err != nil {
 		return err
 	}
 	if err := os.Chmod(s.Workspace, 0700); err != nil {
 		return err
 	}
-	if err := os.Chmod(filepath.Join(s.Workspace, ".codex"), 0700); err != nil {
+	configDir := filepath.Join(s.Workspace, "."+harness)
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(configDir, 0700); err != nil {
 		return err
 	}
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	hookCommand := shellQuote(exe) + " __hook " + shellQuote(s.ID)
+	if harness == harnessClaude {
+		return materializeClaudeWorkspace(s, exe, configDir)
+	}
+	hookCommand := shellQuote(exe) + " __hook " + shellQuote(s.ID) + " " + shellQuote(harnessCodex)
 	hooks := map[string]any{
 		"description": "Route Codex tool use through the active losh SSH session.",
 		"hooks": map[string]any{
@@ -591,12 +649,13 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 
 func usage(out io.Writer) {
 	fmt.Fprintln(out, `Usage:
-  losh [user@]host[:/remote/root] [--resume [CHAT]] [-- CODEX_OPTIONS...]
+  losh [user@]host[:/remote/root] [--harness codex|claude] [--resume [CHAT]] [-- HARNESS_OPTIONS...]
   losh sessions
   losh version
 
 Options:
-  -r, --resume [CHAT]  Open Codex's picker, or resume CHAT by name or ID
+  -r, --resume [CHAT]  Open the harness picker, or resume CHAT by name or ID
+      --harness NAME   Run codex (default) or claude
       --root PATH      Set the remote working root (useful for ambiguous targets)
       --skip-probe     Skip the initial SSH connectivity and shell probe
       --no-install     Fail instead of installing a missing/incompatible losh-server
@@ -605,6 +664,7 @@ Examples:
   losh akrentsel@fuzz.foo.com
   losh prod:/srv/api --resume
   losh prod:/srv/api --resume fix-login
+  losh prod:/srv/api --harness claude
   losh prod --root /srv/api -- --model gpt-5.6-sol`)
 }
 

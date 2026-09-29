@@ -1,7 +1,7 @@
 # Installing losh
 
-Install losh on the **client machine**, where Codex runs and where you initiate
-SSH. On first use, the client automatically installs a small versioned
+Install losh on the **client machine**, where Codex or Claude Code runs and where
+you initiate SSH. On first use, the client automatically installs a small versioned
 `losh-server` binary under the remote user's home directory.
 
 ## Topology
@@ -9,13 +9,13 @@ SSH. On first use, the client automatically installs a small versioned
 ```text
 client/login machine                           target machine
 --------------------                           --------------
-losh + authenticated Codex
+losh + authenticated Codex and/or Claude Code
 ~/.losh conversations/sessions  --- SSH --->   ~/.local/lib/losh/server/<version>/
 bundled server binaries                        ~/.local/state/losh/ operation records
                                                project, services, logs
 ```
 
-The target does not receive Codex, model credentials, conversation state, an
+The target does not receive either harness, model credentials, conversation state, an
 SSH agent, or a new public listening port. `losh-server` runs with the
 permissions of the SSH account and needs no sudo or system service.
 
@@ -25,7 +25,7 @@ Client:
 
 - macOS or Linux;
 - system OpenSSH;
-- Codex CLI installed and authenticated;
+- at least one supported harness installed and authenticated: Codex or Claude Code;
 - network access and SSH credentials for the target;
 - Go 1.22+ only for source builds.
 
@@ -41,13 +41,17 @@ Verify the client and connection:
 
 ```sh
 ssh -V
+claude --version
+claude auth status
 codex --version
 codex login status
 ssh user@target 'command -v sh && uname -s && uname -m'
 ```
 
-If Codex is not authenticated, run `codex` and complete its login flow on the
-client. See the [official OpenAI Codex quickstart](https://developers.openai.com/codex/quickstart).
+Authenticate only the harnesses you plan to use. Run `codex` and complete its
+login flow for Codex, or run `claude auth login` for Claude Code. See the
+[official OpenAI Codex quickstart](https://developers.openai.com/codex/quickstart)
+and [Claude Code authentication docs](https://code.claude.com/docs/en/authentication).
 
 ## Recommended: Homebrew
 
@@ -63,10 +67,12 @@ brew upgrade akrentsel/tap/losh
 ```
 
 The formula builds the local client and bundles server executables for
-Linux/macOS AMD64/ARM64. Codex is a separate client dependency:
+Linux/macOS AMD64/ARM64. Harnesses are separate client dependencies:
 
 ```sh
 brew install --cask codex
+
+Install Claude Code using Anthropic's [supported setup](https://code.claude.com/docs/en/setup).
 ```
 
 ## Build and install from source
@@ -143,7 +149,7 @@ The client:
    file;
 6. sets executable permissions and atomically renames it into the versioned
    install path;
-7. verifies the remote server version before starting Codex.
+7. verifies the remote server version before starting the selected local harness.
 
 The target does not need internet access. A later client version installs into
 a different versioned directory, so active operations do not lose their
@@ -170,8 +176,10 @@ Client state defaults to `$HOME/.losh` and can be moved with `LOSH_HOME`:
 │   ├── session.json
 │   └── calls/                   pending shell payloads
 └── workspaces/<sanitized-target>--<id>/
-    ├── AGENTS.md                generated transparent workspace instructions
-    └── .codex/hooks.json
+    ├── AGENTS.md                generated Codex instructions, when used
+    ├── .codex/hooks.json        generated Codex hooks, when used
+    ├── CLAUDE.md                generated Claude instructions, when used
+    └── .claude/settings.json    generated Claude hooks, when used
 ```
 
 Remote state:
@@ -193,34 +201,69 @@ interactive PTYs are still future work.
 ## Start, choose a root, and resume
 
 ```sh
-# Remote user's home
+# Remote user's home with the default Codex harness
 losh user@target
 
-# Explicit workspace
+# Explicit remote workspace
 losh user@target:/srv/app
 losh user@target --root /srv/app
 
-# Pick a conversation for this target/root
+# Open Codex's picker, or resume a name/ID directly
 losh user@target:/srv/app --resume
-
-# Or resume one directly by name or ID
 losh user@target:/srv/app --resume fix-login
 
-# On exit, losh prints this form with the exact captured Codex session ID
-losh user@target:/srv/app --resume 01abc-session-id
+# Start Claude Code locally against the same remote target
+losh user@target:/srv/app --harness claude
 
-# List local session records
+# Open Claude's picker, or resume a name/ID directly
+losh user@target:/srv/app --harness claude --resume
+losh user@target:/srv/app --harness claude --resume fix-login
+
+# Exit hints include the exact captured session ID and selected harness
+losh user@target:/srv/app --resume 01abc-codex-session-id
+losh user@target:/srv/app --harness claude --resume claude-session-id
+
+# List local target/root records
 losh sessions
 ```
 
-Arguments after `--` go to Codex:
+Arguments after `--` go to the selected harness:
 
 ```sh
 losh user@target:/srv/app -- --model gpt-5.6-sol
+losh user@target:/srv/app --harness claude -- --model sonnet
 ```
 
-Codex may ask you to trust the generated project hook. Review that it invokes
-the expected local losh executable.
+Codex may ask you to trust the generated project hook. Claude receives its
+generated hook file through `--settings`; losh rejects a user-supplied Claude
+`--settings` argument because replacing that file would bypass remote routing.
+In either case, review that hooks invoke the expected local losh executable.
+
+## Claude Code tool behavior
+
+With `--harness claude`, losh passes a generated settings file to the local
+Claude CLI. Its hooks map tools as follows:
+
+| Claude tool | losh behavior |
+| --- | --- |
+| `Bash` | Rewrites the command to the durable remote command wrapper |
+| `Read` | Reads a confined remote file/range (files up to 16 MiB) and returns bounded numbered output |
+| `Edit` | Exact remote `old_string` replacement, staged and atomically published |
+| `Write` | Whole-file remote replacement, staged and atomically published |
+| `Glob`, `Grep` | Blocks local execution; Claude is instructed to retry with remote Bash |
+| `NotebookEdit` | Blocks local execution; use a remote Bash/Python command |
+
+Claude hooks cannot replace a native tool call with an arbitrary successful
+result. losh therefore completes Read/Edit/Write remotely, denies the local
+duplicate, and places the confirmed result in the denial reason. A “blocked”
+label in Claude's UI can therefore accompany a successful remote operation.
+Subsequent remote verification is authoritative.
+
+Ordinary hook errors exit with Claude's blocking status. However, Claude's
+documented command-hook contract lets a tool continue through normal permission
+handling if the hook process is killed or times out. The generated local
+workspace is read-only as defense in depth, but this is not a complete
+fail-closed boundary. Do not treat this proof of concept as hardened isolation.
 
 ## Current apply_patch behavior
 

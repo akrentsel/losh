@@ -88,7 +88,7 @@ func TestSessionStartHookCapturesCodexSessionID(t *testing.T) {
 	}
 	input := `{"session_id":"01abc-session","hook_event_name":"SessionStart","source":"startup"}`
 	var output strings.Builder
-	if err := runHook(s.ID, strings.NewReader(input), &output); err != nil {
+	if err := runHook(s.ID, harnessCodex, strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
 	}
 	saved, err := loadSession(s.ID)
@@ -212,7 +212,7 @@ func TestCodexBaseArgsEnableNetwork(t *testing.T) {
 
 func TestResumeHint(t *testing.T) {
 	s := session{Target: "deploy@example.com", RemoteRoot: "/srv/it's here", CodexSessionID: "01abc-session"}
-	got := resumeHint(s)
+	got := resumeHint(s, harnessCodex)
 	want := "losh 'deploy@example.com' --root '/srv/it'\"'\"'s here' --resume '01abc-session'"
 	if got != want {
 		t.Fatalf("resumeHint() = %q, want %q", got, want)
@@ -220,7 +220,7 @@ func TestResumeHint(t *testing.T) {
 }
 
 func TestResumeHintHome(t *testing.T) {
-	got := resumeHint(session{Target: "example.com"})
+	got := resumeHint(session{Target: "example.com"}, harnessCodex)
 	want := "losh 'example.com' --resume"
 	if got != want {
 		t.Fatalf("resumeHint() = %q, want %q", got, want)

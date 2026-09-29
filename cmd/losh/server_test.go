@@ -301,4 +301,30 @@ func TestRemoteServerIntegration(t *testing.T) {
 	if replayed != result {
 		t.Fatalf("deduplicated result = %q, want %q", replayed, result)
 	}
+	claudeWrite := marshalClaudeOperation(t, claudeFileOperation{
+		Path:    "claude.txt",
+		Content: "before\n",
+	})
+	if _, err := runRemoteFileOperation(workspaceSession, "claude-write-"+sessionID, "fs-write", claudeWrite); err != nil {
+		t.Fatal(err)
+	}
+	claudeEdit := marshalClaudeOperation(t, claudeFileOperation{
+		Path:      "claude.txt",
+		OldString: "before",
+		NewString: "after",
+	})
+	if _, err := runRemoteFileOperation(workspaceSession, "claude-edit-"+sessionID, "fs-edit", claudeEdit); err != nil {
+		t.Fatal(err)
+	}
+	claudeRead := marshalClaudeOperation(t, claudeFileOperation{
+		Path:  "claude.txt",
+		Limit: 10,
+	})
+	claudeResult, err := runRemoteFileOperation(workspaceSession, "claude-read-"+sessionID, "fs-read", claudeRead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claudeResult != "     1→after\n" {
+		t.Fatalf("remote Claude read = %q", claudeResult)
+	}
 }

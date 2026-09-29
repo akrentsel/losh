@@ -137,7 +137,10 @@ versions drain or refuse startup rather than abandoning operation history.
 
 The current implementation rewrites Codex Bash commands through `PreToolUse`,
 routes commands and patches through durable remote operations, and blocks the
-duplicate native `apply_patch`. Its harness coverage is not yet complete.
+duplicate native `apply_patch`. The Claude adapter rewrites Bash, implements
+durable confined Read/Edit/Write operations, and blocks Glob/Grep/NotebookEdit
+with a request to retry through remote Bash. Both adapters capture supported
+session IDs and retain native picker/direct resume behavior.
 
 Codex documents input rewriting for Bash and `apply_patch`, but that does not
 establish replacement of a native executor with an arbitrary remote result.
@@ -145,9 +148,13 @@ Some tool paths bypass hooks, and some unsupported hook responses allow the
 original call to continue. Hook coverage must be tested rather than treated
 as enforcement by itself. [Codex hooks](https://learn.chatgpt.com/docs/hooks)
 
-Claude Code documents pre-tool input replacement and permission decisions.
-That establishes a possible interception point, not a proven general remote
-execution backend for native file tools.
+Claude Code documents pre-tool input replacement and permission decisions, and
+the implementation uses its command-hook exec form. Hooks still cannot replace
+a native call with an arbitrary successful result, so confirmed remote
+Read/Edit/Write results return through the blocked local call's reason. Claude
+also documents that a command hook killed at its timeout does not block
+`PreToolUse`; ordinary losh hook errors use exit status 2, but timeout-level
+fail-closed enforcement still requires a stronger extension point.
 [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 
 ### User-invoked shell mode and the shell-wrapper proposal
@@ -737,6 +744,8 @@ The first implementation now provides:
 - durable request IDs/digests, remote request/status journals, and deduplication;
 - detached command workers with retained terminal output and exit status;
 - a server-side Codex patch parser for add/update/delete/move;
+- a Claude harness adapter with Bash rewriting, structured remote
+  Read/Edit/Write, protected generated settings, and native resume semantics;
 - confined paths, staged complete files, atomic per-file rename, and rollback
   attempts when a reported publication step fails;
 - reconnecting RPC calls and status recovery; and
@@ -756,8 +765,9 @@ Still required for the full contract:
 - persistent supervision, output-by-offset streaming, PTYs, input, cancellation,
   dependency scheduling, and target epochs;
 - crash recovery for partial multi-file publication and retained-result GC;
-- approval/audit integration and broad failure injection; and
-- Claude Code conformance.
+- approval/audit integration and broad failure injection;
+- native Claude Glob/Grep/Notebook results and broader Claude conformance; and
+- a fail-closed answer for killed or timed-out command hooks.
 
 ### D. Failure testing before reliability claims
 
@@ -782,8 +792,8 @@ Required assertions include:
 ### E. Transfer efficiency and other harnesses
 
 Add resumable chunks/deltas after measuring the baseline. Keep server semantics
-unchanged when adding `--harness claude`; validate its tool matching, result,
-approval, and diff behavior with the same conformance cases.
+unchanged while expanding `--harness claude`; validate tool matching, result,
+approval, timeout, and diff behavior with the same conformance cases.
 
 ## 14. Decision record and remaining questions
 

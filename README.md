@@ -3,7 +3,7 @@
 **Local agent, remote machine.**
 
 losh is a natural-language interface to any computer you can already reach
-with SSH. It runs the coding agent locally—starting with Codex—but executes the
+with SSH. It runs Codex or Claude Code locally but executes the
 agent's actions on a selected remote host.
 
     $ losh akrentsel@fuzz.foo.com
@@ -31,7 +31,7 @@ machines, and scattering conversations across the fleet.
 losh reverses that arrangement:
 
     ┌──────────────────────── local ─────────────────────────┐
-    │ losh + Codex                                           │
+    │ losh + Codex or Claude Code                            │
     │ provider authentication · sessions · approvals         │
     │                                                       │
     │          exec · read · write · patch · processes       │
@@ -65,6 +65,13 @@ The compatibility goal is:
     # Forward options to Codex
     losh prod:/srv/api -- --model gpt-5.6-sol
 
+    # Run locally authenticated Claude Code instead
+    losh prod:/srv/api --harness claude
+
+    # Resume through Claude's picker, or select a name/ID directly
+    losh prod:/srv/api --harness claude --resume
+    losh prod:/srv/api --harness claude --resume fix-login
+
     # Inspect known sessions
     losh sessions
 
@@ -78,6 +85,10 @@ Implemented:
 - durable operation IDs, remote journals, detached command workers, and result replay;
 - remote roots such as **prod:/srv/api**;
 - Codex shell interception with remote stdout, stderr, and exit status;
+- Claude Bash interception, atomic remote Read/Edit/Write operations, native
+  picker/direct resume, and session-ID capture;
+- blocking of Claude Glob, Grep, and NotebookEdit with instructions
+  to use their remote Bash equivalents;
 - server-side add/update/delete/move patches with path confinement, staging,
   atomic per-file publication, and rollback on reported commit errors;
 - deterministic local session state, **--resume**, and session listing.
@@ -92,42 +103,53 @@ Current limitations:
   executor result. losh applies the patch remotely, blocks its local duplicate,
   and returns the confirmed result in the hook message; Codex continues
   correctly, but the UI labels the native call as blocked.
+- Claude's native Read/Edit/Write calls are committed remotely and their local
+  duplicates are denied. Claude receives the confirmed result in the denial
+  reason, so the UI can label an operation blocked even though the remote
+  operation succeeded. Glob, Grep, and NotebookEdit currently retry through
+  Bash rather than preserving their native presentation.
+- Claude command hooks fail open if the hook process itself is killed or reaches
+  Claude's timeout; the read-only local metadata workspace is only a backstop.
 - command output is returned when the command exits rather than streamed;
 - interactive PTYs, stdin attachment, cancellation, and reconnectable terminals
   are not implemented;
 - patch conflict checks currently use patch context, not read-version tokens;
 - multi-file patches use staged per-file publication and best-effort rollback,
   not crash-recovered whole-tree transactions;
-- losh-owned approvals, signed release artifacts, `--harness claude`, and
-  production hardening remain to be implemented.
+- losh-owned approvals, signed release artifacts, complete native-tool coverage,
+  and production hardening remain to be implemented.
 
 ## Clean installation
 
-Install losh on the **client** where Codex runs. Do not install it manually on
-the target. The target needs SSH, `/bin/sh`, a supported OS/architecture, and a
-writable home directory. The first `losh` connection installs the matching
-server automatically through SSH.
+Install losh on the **client** where Codex or Claude Code runs. Do not install it
+manually on the target. The target needs SSH, `/bin/sh`, a supported
+OS/architecture, and a writable home directory. The first `losh` connection
+installs the matching server automatically through SSH.
 
 The recommended installation is:
 
     brew install akrentsel/tap/losh
 
 This automatically adds the `akrentsel/homebrew-tap` tap and installs losh.
-Codex remains a separate client-side prerequisite; install it with
-`brew install --cask codex` if needed.
+The selected harness remains a separate client-side prerequisite. Install Codex
+with `brew install --cask codex`, or install and authenticate Claude Code using
+Anthropic's supported installer.
 
 ### 1. Check the prerequisites
 
-The current prototype requires macOS or Linux, OpenSSH, and an installed and
-authenticated Codex CLI. Go 1.22 or newer is needed only for a source build:
+The current prototype requires macOS or Linux, OpenSSH, and at least one
+installed/authenticated harness. Go 1.22 or newer is needed only for a source build:
 
     ssh -V
     go version
     codex --version
     codex login status
 
-If Codex is not authenticated, run `codex` and complete its sign-in flow. Then
-confirm that ordinary SSH works before involving losh:
+    claude --version
+    claude auth status
+Authenticate only the harnesses you intend to use: run `codex` for Codex, or
+`claude auth login` for Claude Code. Then confirm that ordinary SSH works
+before involving losh:
 
     ssh user@example.com true
 
@@ -167,16 +189,21 @@ not required:
 
     losh user@example.com
 
-To work in a specific remote directory and later resume the same local Codex
+To use Claude Code instead of the default Codex harness:
+
+    losh user@example.com:/srv/app --harness claude
+    losh user@example.com:/srv/app --harness claude --resume
+
+To work in a specific remote directory and later resume the same local
 conversation:
 
     losh user@example.com:/srv/app
     losh user@example.com:/srv/app --resume
 
-Session metadata and generated Codex workspaces live under `$HOME/.losh`. List
+Session metadata and generated harness workspaces live under `$HOME/.losh`. List
 them with `losh sessions`. The target stores the versioned helper and durable
 operation records under its user account; it never receives model credentials
-or the Codex conversation.
+or either harness's conversation.
 
 The source is published at **https://github.com/akrentsel/losh** and its formula
 at **https://github.com/akrentsel/homebrew-tap**. After explicitly running
@@ -196,8 +223,8 @@ explicitly in the document.
 
 ### Keep the agent local
 
-losh starts Codex locally in a stable, target-specific workspace. That workspace
-is not a mirror of the remote filesystem; it contains only generated
+losh starts the selected harness locally in a stable, target-specific workspace.
+That workspace is not a mirror of the remote filesystem; it contains only generated
 instructions and hooks representing the remote environment.
 
 This keeps model credentials off the server, keeps conversations available when
@@ -206,23 +233,22 @@ architectures.
 
 ### Keep the transport independent of the harness
 
-Codex is the only supported harness today and is the implicit default. The
-planned interface is:
+Codex remains the implicit default; Claude Code is selected explicitly:
 
     losh user@example.com                       # --harness codex
     losh user@example.com --harness codex
-    losh user@example.com --harness claude      # planned, not implemented
+    losh user@example.com --harness claude
 
-`--harness claude` will run Claude Code locally; it will not install Claude on
+`--harness claude` runs Claude Code locally; it does not install Claude on
 the target. SSH execution, target identity, approvals, durable operations, and
 audit records should remain in the shared losh core. Each harness adapter owns
 only its local CLI invocation, instructions, tool interception, and resume
 mechanism. Harness identity must be included in session metadata so a Codex
 conversation is never accidentally resumed as a Claude Code conversation.
 
-Arguments following `--` belong to the selected harness. Until harness
-selection is implemented, passing `--harness` is an error rather than a silent
-fallback to Codex.
+Arguments following `--` belong to the selected harness. losh refuses a
+Claude `--settings` override because its generated settings file contains the
+hooks that prevent workspace operations from silently running locally.
 
 ### Intercept tools, not system calls
 
@@ -230,7 +256,7 @@ Redirecting arbitrary processes or filesystem syscalls would turn losh into a
 distributed operating system. Instead, it intercepts actions at the agent's
 tool boundary, where their intent is explicit.
 
-    Codex proposes Bash or apply_patch
+    Codex or Claude proposes a tool action
                   │
                   ▼
     generated tool hook + losh client coordinator
@@ -239,7 +265,7 @@ tool boundary, where their intent is explicit.
     OpenSSH → losh-server → detached worker / filesystem transaction
                   │ remote journal + retained result
                   ▼
-    confirmed stdout, exit status, or patch result returns to Codex
+    confirmed stdout, exit status, read data, or edit result returns to the harness
 
 Shell commands are stored briefly in a mode-0600 local call file so the rewritten
 wrapper does not add a quoting boundary. losh-server records the accepted
@@ -252,6 +278,13 @@ the target and functional for Codex, although current Codex UI presents the
 native tool call as blocked. The generated instructions otherwise describe an
 ordinary workspace rather than teaching the model a separate remote workflow.
 
+
+For Claude, Bash is rewritten through the same command wrapper. Read, Edit, and
+Write become durable structured server operations; Edit uses exact
+`old_string` matching and Write publishes a staged whole file atomically.
+Because Claude hooks also cannot inject an arbitrary native success result,
+losh blocks the local duplicate and returns the confirmed remote result in the
+hook reason. Glob, Grep, and NotebookEdit are blocked and retried through Bash.
 ### Let OpenSSH remain OpenSSH
 
 The prototype invokes the system ssh executable rather than reimplementing the
@@ -268,11 +301,13 @@ State lives under **~/.losh**. Set LOSH_HOME to override it.
     ~/.losh/
     ├── control/                    OpenSSH multiplexing sockets
     ├── sessions/<session-id>/
-    │   ├── session.json            target, root, Codex ID, and timestamps
+    │   ├── session.json            target, root, harness IDs, and timestamps
     │   └── calls/                  short-lived pending commands
     └── workspaces/<sanitized-target>--<session-id>/
-        ├── AGENTS.md               generated remote policy
-        └── .codex/hooks.json       generated interception hook
+        ├── AGENTS.md               generated Codex policy, when used
+        ├── .codex/hooks.json       generated Codex hook, when used
+        ├── CLAUDE.md               generated Claude policy, when used
+        └── .claude/settings.json   generated Claude hooks, when used
 
 Workspace labels retain ASCII letters, digits, `.`, `@`, `-`, and `_`;
 other character runs become `_`, and labels are capped at 48 characters. The
@@ -285,10 +320,11 @@ therefore distinct:
     prod:/srv/api
     deploy@prod:/srv/api
 
-Codex remains authoritative for conversation state. With bare **--resume**,
-losh runs **codex resume** from the stable target workspace, opening Codex's
-native picker for that target and root. Pass a conversation name or ID after
-**--resume** to select it directly. losh does not parse Codex's private transcript format.
+Each harness remains authoritative for its own conversation state. Bare
+**--resume** opens the selected harness's native picker from the stable target
+workspace. Pass a conversation name or ID after **--resume** to select it
+directly. losh records supported session IDs from `SessionStart`; it does not
+parse either harness's private transcript format.
 
 ### Bootstrap losh-server automatically
 
@@ -306,13 +342,14 @@ back to weaker direct execution when reliable server mode is expected.
 
 ### Conversation and operation persistence
 
-Codex conversation state remains local; **--resume** opens its picker, while
-**--resume NAME_OR_ID** restores a conversation directly. Accepted
+Codex and Claude conversation state remains local; **--resume** opens the
+selected harness's picker, while **--resume NAME_OR_ID** restores a conversation directly. Accepted
 commands run in detached server workers with remote status, output, and exit
 records, so losing the SSH transport does not cause losh to submit a second
-command. A Codex `SessionStart` hook stores the supported `session_id`; when
-Codex exits, losh prints a complete **losh TARGET --resume SESSION_ID** command
-for that exact conversation. Streaming attachment and interactive PTYs remain
+command. A harness `SessionStart` hook stores its supported `session_id`;
+when the harness exits, losh prints a complete, harness-specific
+**losh TARGET [--harness claude] --resume SESSION_ID** command for that exact
+conversation. Streaming attachment and interactive PTYs remain
 future work. A target reboot can still interrupt a worker; losh reports evidence
 or uncertainty instead of relaunching it automatically.
 
@@ -334,9 +371,9 @@ Requirements:
 - sandbox the local agent as a backstop to hook coverage;
 - encourage restricted remote accounts and OS-enforced permissions.
 
-The prototype implements only part of this model. Its hook rewrites a Codex
-call with an allow decision, so losh-owned approval handling must be added
-before production use. Instructions asking Codex to be cautious are not an
+The prototype implements only part of this model. Its hooks rewrite harness
+calls, so losh-owned approval handling must be added before production use.
+Instructions asking an agent to be cautious are not an
 enforcement boundary.
 
 ## Open design questions
@@ -358,7 +395,7 @@ enforcement boundary.
 3. Add streaming output, PTYs, stdin, cancellation, and job attachment.
 4. Add losh-owned approvals, audit records, and target identity epochs.
 5. Add signed release artifacts and broader failure-injection testing.
-6. Add the `--harness` abstraction and a Claude Code adapter.
+6. Expand Claude native Glob/Grep/Notebook coverage and conformance testing.
 
 ## Development
 
@@ -376,7 +413,7 @@ bootstrap, commands, patches, and operation deduplication:
 
 ## Next step: unreliable networks
 
-losh should treat a disappearing network as a normal event. The local Codex
+losh should treat a disappearing network as a normal event. The local harness
 conversation already survives because its state is kept on the client, but an
 in-flight remote action needs stronger semantics than simply retrying it: after
 a disconnect, losh may not know whether the command ran.
