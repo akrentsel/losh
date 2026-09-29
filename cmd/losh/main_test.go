@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,75 @@ func TestShellQuote(t *testing.T) {
 		if got := shellQuote(input); got != want {
 			t.Errorf("shellQuote(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestWorkspacePath(t *testing.T) {
+	tests := []struct {
+		name, target, want string
+	}{
+		{name: "host", target: "loshy.exe.xyz", want: "loshy.exe.xyz--sessionid"},
+		{name: "user and host", target: "exedev@loshy.exe.xyz", want: "exedev@loshy.exe.xyz--sessionid"},
+		{name: "IPv6", target: "[2001:db8::1]", want: "2001_db8_1--sessionid"},
+		{name: "path characters", target: "../../odd host/name", want: "odd_host_name--sessionid"},
+		{name: "empty after sanitizing", target: "////", want: "host--sessionid"},
+		{name: "truncated", target: strings.Repeat("a", 60), want: strings.Repeat("a", 48) + "--sessionid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := filepath.Base(workspacePath(tt.target, "sessionid")); got != tt.want {
+				t.Fatalf("workspacePath(%q) basename = %q, want %q", tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnsureSessionMigratesWorkspaceName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("LOSH_HOME", home)
+	target := "exedev@loshy.exe.xyz"
+	root := "/srv/app"
+	id := shortHash(target + "\x00" + root)
+	oldWorkspace := filepath.Join(home, "workspaces", id)
+	if err := saveSession(session{
+		ID:         id,
+		Target:     target,
+		RemoteRoot: root,
+		Workspace:  oldWorkspace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ensureSession(target, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "workspaces", "exedev@loshy.exe.xyz--"+id)
+	if got.Workspace != want {
+		t.Fatalf("ensureSession() workspace = %q, want %q", got.Workspace, want)
+	}
+}
+
+func TestSessionStartHookCapturesCodexSessionID(t *testing.T) {
+	t.Setenv("LOSH_HOME", t.TempDir())
+	s, err := ensureSession("worker@example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := `{"session_id":"01abc-session","hook_event_name":"SessionStart","source":"startup"}`
+	var output strings.Builder
+	if err := runHook(s.ID, strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := loadSession(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.CodexSessionID != "01abc-session" {
+		t.Fatalf("captured Codex session ID = %q, want %q", saved.CodexSessionID, "01abc-session")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("SessionStart hook output = %q, want no output", output.String())
 	}
 }
 
@@ -141,9 +211,9 @@ func TestCodexBaseArgsEnableNetwork(t *testing.T) {
 }
 
 func TestResumeHint(t *testing.T) {
-	s := session{Target: "deploy@example.com", RemoteRoot: "/srv/it's here"}
+	s := session{Target: "deploy@example.com", RemoteRoot: "/srv/it's here", CodexSessionID: "01abc-session"}
 	got := resumeHint(s)
-	want := "losh 'deploy@example.com' --root '/srv/it'\"'\"'s here' --resume"
+	want := "losh 'deploy@example.com' --root '/srv/it'\"'\"'s here' --resume '01abc-session'"
 	if got != want {
 		t.Fatalf("resumeHint() = %q, want %q", got, want)
 	}

@@ -268,11 +268,15 @@ State lives under **~/.losh**. Set LOSH_HOME to override it.
     ~/.losh/
     ├── control/                    OpenSSH multiplexing sockets
     ├── sessions/<session-id>/
-    │   ├── session.json            target, root, and timestamps
+    │   ├── session.json            target, root, Codex ID, and timestamps
     │   └── calls/                  short-lived pending commands
-    └── workspaces/<session-id>/
+    └── workspaces/<sanitized-target>--<session-id>/
         ├── AGENTS.md               generated remote policy
         └── .codex/hooks.json       generated interception hook
+
+Workspace labels retain ASCII letters, digits, `.`, `@`, `-`, and `_`;
+other character runs become `_`, and labels are capped at 48 characters. The
+full session ID remains in the name, preventing sanitized-label collisions.
 
 The ID is derived from the literal SSH target and remote root. These are
 therefore distinct:
@@ -306,9 +310,11 @@ Codex conversation state remains local; **--resume** opens its picker, while
 **--resume NAME_OR_ID** restores a conversation directly. Accepted
 commands run in detached server workers with remote status, output, and exit
 records, so losing the SSH transport does not cause losh to submit a second
-command. Streaming attachment and interactive PTYs remain future work. A target
-reboot can still interrupt a worker; losh reports evidence or uncertainty
-instead of relaunching it automatically.
+command. A Codex `SessionStart` hook stores the supported `session_id`; when
+Codex exits, losh prints a complete **losh TARGET --resume SESSION_ID** command
+for that exact conversation. Streaming attachment and interactive PTYs remain
+future work. A target reboot can still interrupt a worker; losh reports evidence
+or uncertainty instead of relaunching it automatically.
 
 ## Security model
 

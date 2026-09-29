@@ -15,21 +15,24 @@ import (
 	"time"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 type session struct {
-	ID         string    `json:"id"`
-	Target     string    `json:"target"`
-	RemoteRoot string    `json:"remote_root"`
-	Workspace  string    `json:"workspace"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastUsedAt time.Time `json:"last_used_at"`
+	ID             string    `json:"id"`
+	Target         string    `json:"target"`
+	RemoteRoot     string    `json:"remote_root"`
+	Workspace      string    `json:"workspace"`
+	CodexSessionID string    `json:"codex_session_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	LastUsedAt     time.Time `json:"last_used_at"`
 }
 
 type hookInput struct {
-	ToolName  string         `json:"tool_name"`
-	ToolUseID string         `json:"tool_use_id"`
-	ToolInput map[string]any `json:"tool_input"`
+	SessionID     string         `json:"session_id"`
+	HookEventName string         `json:"hook_event_name"`
+	ToolName      string         `json:"tool_name"`
+	ToolUseID     string         `json:"tool_use_id"`
+	ToolInput     map[string]any `json:"tool_input"`
 }
 
 type options struct {
@@ -178,7 +181,13 @@ func start(target, remoteRoot string, resume bool, resumeSession string, skipPro
 	cmd.Env = append(os.Environ(), "LOSH_SESSION="+s.ID, "LOSH_TARGET="+s.Target)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if len(codexArgs) == 0 || codexArgs[0] != "exec" {
-		defer fmt.Fprintf(os.Stderr, "\nlosh: Codex's `codex resume` hint refers to the underlying harness.\nlosh: resume this remote session with:\n  %s\n", resumeHint(s))
+		defer func() {
+			latest := s
+			if saved, err := loadSession(s.ID); err == nil {
+				latest = saved
+			}
+			fmt.Fprintf(os.Stderr, "\nlosh: resume this remote session with:\n  %s\n", resumeHint(latest))
+		}()
 	}
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
@@ -229,6 +238,9 @@ func resumeHint(s session) string {
 		parts = append(parts, "--root", shellQuote(s.RemoteRoot))
 	}
 	parts = append(parts, "--resume")
+	if s.CodexSessionID != "" {
+		parts = append(parts, shellQuote(s.CodexSessionID))
+	}
 	return strings.Join(parts, " ")
 }
 
@@ -250,6 +262,19 @@ func runHook(sessionID string, in io.Reader, out io.Writer) error {
 	var input hookInput
 	if err := json.NewDecoder(in).Decode(&input); err != nil {
 		return fmt.Errorf("decode hook input: %w", err)
+	}
+
+	if input.SessionID != "" {
+		s, err := loadSession(sessionID)
+		if err != nil {
+			return err
+		}
+		if s.CodexSessionID != input.SessionID {
+			s.CodexSessionID = input.SessionID
+			if err := saveSession(s); err != nil {
+				return err
+			}
+		}
 	}
 
 	switch input.ToolName {
@@ -345,6 +370,7 @@ func ensureSession(target, root string) (session, error) {
 		if err := json.Unmarshal(data, &s); err != nil {
 			return s, err
 		}
+		s.Workspace = workspacePath(target, id)
 		s.LastUsedAt = time.Now().UTC()
 		return s, saveSession(s)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -352,7 +378,7 @@ func ensureSession(target, root string) (session, error) {
 	}
 
 	now := time.Now().UTC()
-	s := session{ID: id, Target: target, RemoteRoot: root, Workspace: filepath.Join(stateRoot(), "workspaces", id), CreatedAt: now, LastUsedAt: now}
+	s := session{ID: id, Target: target, RemoteRoot: root, Workspace: workspacePath(target, id), CreatedAt: now, LastUsedAt: now}
 	return s, saveSession(s)
 }
 
@@ -405,12 +431,16 @@ func materializeWorkspace(s session) error {
 	if err != nil {
 		return err
 	}
+	hookCommand := shellQuote(exe) + " __hook " + shellQuote(s.ID)
 	hooks := map[string]any{
 		"description": "Route Codex tool use through the active losh SSH session.",
 		"hooks": map[string]any{
+			"SessionStart": []any{map[string]any{
+				"matcher": "^(startup|resume|clear|compact)$",
+				"hooks":   []any{map[string]any{"type": "command", "command": hookCommand, "timeout": 10}}}},
 			"PreToolUse": []any{map[string]any{
 				"matcher": "^(Bash|apply_patch)$",
-				"hooks":   []any{map[string]any{"type": "command", "command": shellQuote(exe) + " __hook " + shellQuote(s.ID), "timeout": 600, "statusMessage": "Routing workspace operation through losh"}}}},
+				"hooks":   []any{map[string]any{"type": "command", "command": hookCommand, "timeout": 600, "statusMessage": "Routing workspace operation through losh"}}}},
 		},
 	}
 	hookData, err := json.MarshalIndent(hooks, "", "  ")
@@ -491,6 +521,36 @@ func sessionDir(id string) string { return filepath.Join(stateRoot(), "sessions"
 func shortHash(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:12])
+}
+
+func workspacePath(target, id string) string {
+	const maxLabelLength = 48
+	var b strings.Builder
+	lastReplacement := false
+	for _, r := range target {
+		if b.Len() >= maxLabelLength {
+			break
+		}
+		allowed := r >= 'a' && r <= 'z' ||
+			r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' ||
+			r == '.' || r == '@' || r == '-' || r == '_'
+		if allowed {
+			b.WriteRune(r)
+			lastReplacement = false
+			continue
+		}
+		if !lastReplacement {
+			b.WriteByte('_')
+			lastReplacement = true
+		}
+	}
+	label := strings.Trim(b.String(), ".@-_")
+	if label == "" {
+		label = "host"
+	}
+	name := label + "--" + id
+	return filepath.Join(stateRoot(), "workspaces", name)
 }
 
 func safeName(value string) string {

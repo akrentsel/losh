@@ -155,7 +155,7 @@ execution backend for native file tools.
 Codex's user-invoked shell mode is a separate execution path from an
 agent-issued `Bash` tool call. In the current integration, commands entered
 directly by the user run locally in the losh metadata workspace. For example,
-`pwd` reports `$HOME/.losh/workspaces/<session-id>` and `ls` can expose the
+`pwd` reports `$HOME/.losh/workspaces/<sanitized-target>--<session-id>` and `ls` can expose the
 generated `AGENTS.md`. The `PreToolUse` hook never sees this command, so the
 existing Bash rewrite cannot make it remote.
 

@@ -169,7 +169,7 @@ Client state defaults to `$HOME/.losh` and can be moved with `LOSH_HOME`:
 ├── sessions/<id>/
 │   ├── session.json
 │   └── calls/                   pending shell payloads
-└── workspaces/<id>/
+└── workspaces/<sanitized-target>--<id>/
     ├── AGENTS.md                generated transparent workspace instructions
     └── .codex/hooks.json
 ```
@@ -205,6 +205,9 @@ losh user@target:/srv/app --resume
 
 # Or resume one directly by name or ID
 losh user@target:/srv/app --resume fix-login
+
+# On exit, losh prints this form with the exact captured Codex session ID
+losh user@target:/srv/app --resume 01abc-session-id
 
 # List local session records
 losh sessions
@@ -245,7 +248,7 @@ the effect of a hook failure that might otherwise let the local patch continue.
 
 Do not use Codex's direct user shell mode for remote work in the current
 release. It bypasses the `Bash` tool hook and runs locally in losh's metadata
-workspace. Seeing a path such as `$HOME/.losh/workspaces/<session-id>` confirms
+workspace. Seeing a path under `$HOME/.losh/workspaces/` confirms
 that the command did not run on the target.
 
 The tested Codex build ignored a session-specific `SHELL` wrapper, so losh does
